@@ -19,8 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 from agentscope.agent import ReActAgent
-from agentscope.model import OpenAIChatModel, DashScopeChatModel
-from agentscope.formatter import OpenAIChatFormatter, DashScopeChatFormatter
+from agentscope.model import OpenAIChatModel
+from agentscope.formatter import OpenAIChatFormatter
 from agentscope.memory import InMemoryMemory
 from agentscope.tool import Toolkit, ToolResponse
 from agentscope.message import Msg, TextBlock
@@ -32,6 +32,10 @@ from database import db_service
 # 导入数据库工具函数
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from skills import db_tools
+
+# 导入配置
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import config
 
 
 def extract_text_from_content(content_item):
@@ -87,24 +91,23 @@ class MetadataCompletionAgent:
     
     def __init__(
         self,
-        api_key: str = None,
-        model_name: str = "qwen3-max",
-        model_type: str = "dashscope",
-        base_url: str = None,
+        api_key: Optional[str] = None,
+        model_name: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
         """
         初始化元数据补全智能体
-        
+
         Args:
-            api_key: API密钥，默认从环境变量获取
-            model_name: 模型名称，默认使用qwen-plus
-            model_type: 模型类型，支持 "dashscope" 或 "openai"
-            base_url: API基础URL（仅openai类型需要）
+            api_key: API密钥，默认从配置文件获取
+            model_name: 模型名称，默认从配置文件获取
+            base_url: API基础URL，默认从配置文件获取
         """
-        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        self.model_name = model_name
-        self.model_type = model_type
-        self.base_url = base_url
+        from config import ModelConfig
+
+        self.api_key = api_key or ModelConfig.get_api_key()
+        self.model_name = model_name or ModelConfig.get_model_name()
+        self.base_url = base_url or ModelConfig.get_base_url()
         
         # 创建工具集
         self.toolkit = self._create_toolkit()
@@ -148,43 +151,25 @@ class MetadataCompletionAgent:
     
     def _create_agent(self) -> ReActAgent:
         """
-        创建ReAct智能体
-        
+        创建ReAct智能体（OpenAI-compatible）
+
         Returns:
             ReActAgent: 智能体对象
         """
-        # 根据模型类型选择相应的模型和格式化器
-        if self.model_type == "openai":
-            base_url = self.base_url or "https://api.openai.com/v1"
-            model = OpenAIChatModel(
-                model_name=self.model_name,
-                api_key=self.api_key,
-                base_url=self.base_url,
-                stream=True,
-            )
-            formatter = OpenAIChatFormatter()
-            print(f"\n{'='*60}")
-            print(f"[MetadataAgent] 模型配置信息:")
-            print(f"  - 模型类型: OpenAI")
-            print(f"  - 模型名称: {self.model_name}")
-            print(f"  - API URL: {base_url}")
-            print(f"  - API Key: {self.api_key[:8]}...{self.api_key[-4:] if self.api_key else 'None'}")
-            print(f"{'='*60}\n")
-        else:  # dashscope
-            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            model = DashScopeChatModel(
-                model_name=self.model_name,
-                api_key=self.api_key,
-                stream=True,
-            )
-            formatter = DashScopeChatFormatter()
-            print(f"\n{'='*60}")
-            print(f"[MetadataAgent] 模型配置信息:")
-            print(f"  - 模型类型: DashScope (阿里云通义)")
-            print(f"  - 模型名称: {self.model_name}")
-            print(f"  - API URL: {base_url}")
-            print(f"  - API Key: {self.api_key[:8]}...{self.api_key[-4:] if self.api_key else 'None'}")
-            print(f"{'='*60}\n")
+        # 使用OpenAI-compatible模型
+        model = OpenAIChatModel(
+            model_name=self.model_name,
+            api_key=self.api_key,
+            client_kwargs={"base_url": self.base_url},
+            stream=True,
+        )
+        formatter = OpenAIChatFormatter()
+        print(f"\n{'='*60}")
+        print(f"[MetadataAgent] 模型配置信息:")
+        print(f"  - 模型名称: {self.model_name}")
+        print(f"  - API URL: {self.base_url}")
+        print(f"  - API Key: {f'{self.api_key[:8]}...{self.api_key[-4:]}' if self.api_key else 'None'}")
+        print(f"{'='*60}\n")
         
         # 创建智能体
         agent = ReActAgent(
@@ -509,19 +494,17 @@ class MetadataCompletionAgent:
 ```
 只包含需要补全的字段，已有描述的字段不要包含在结果中。"""
         
-        # 创建非流式模型用于ReAct循环
-        if self.model_type == "openai":
-            non_stream_model = OpenAIChatModel(
-                model_name=self.model_name,
-                api_key=self.api_key,
+        # 创建非流式模型用于ReAct循环（OpenAI-compatible）
+        non_stream_model = OpenAIChatModel(
+            model_name=self.model_name,
+            api_key=self.api_key,
+            client_kwargs={"base_url": self.base_url},
+            stream=False,
+            generate_kwargs=config.ModelConfig.get_generate_kwargs(
                 base_url=self.base_url,
-                stream=False,
-            )
-        else:
-            non_stream_model = DashScopeChatModel(
                 model_name=self.model_name,
-                api_key=self.api_key,
-                stream=False,
+                stream=False
+            )
             )
         
         # 初始化对话消息
@@ -537,6 +520,9 @@ class MetadataCompletionAgent:
         iteration = 0
         max_iterations = 10
         step_num = 3  # 从步骤3开始，因为步骤1是初始化，步骤2是检查缺失元数据
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_elapsed_time = 0.0
         
         try:
             while iteration < max_iterations:
@@ -556,6 +542,33 @@ class MetadataCompletionAgent:
                     messages=messages,
                     tools=tools_json if tools_json else None
                 )
+
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+                    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                    elapsed_time = float(getattr(usage, "time", 0.0) or 0.0)
+
+                    total_input_tokens += input_tokens
+                    total_output_tokens += output_tokens
+                    total_elapsed_time += elapsed_time
+
+                    yield {
+                        "type": "usage",
+                        "iteration": iteration,
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "time": elapsed_time,
+                        },
+                        "usage_total": {
+                            "input_tokens": total_input_tokens,
+                            "output_tokens": total_output_tokens,
+                            "total_tokens": total_input_tokens + total_output_tokens,
+                            "time": round(total_elapsed_time, 3),
+                        }
+                    }
                 
                 content_blocks = response.content if hasattr(response, 'content') else []
                 
@@ -737,6 +750,12 @@ class MetadataCompletionAgent:
                     if result and not parse_error:
                         result["table_name"] = table_name
                         result["raw_response"] = response_text
+                        result["usage"] = {
+                            "input_tokens": total_input_tokens,
+                            "output_tokens": total_output_tokens,
+                            "total_tokens": total_input_tokens + total_output_tokens,
+                            "time": round(total_elapsed_time, 3),
+                        }
                         
                         yield {
                             "type": "result",
@@ -747,6 +766,12 @@ class MetadataCompletionAgent:
                         extracted = self._extract_metadata_from_text(response_text, table_name)
                         extracted["raw_response"] = response_text
                         extracted["parse_error"] = True if not extracted.get("table_description") else False
+                        extracted["usage"] = {
+                            "input_tokens": total_input_tokens,
+                            "output_tokens": total_output_tokens,
+                            "total_tokens": total_input_tokens + total_output_tokens,
+                            "time": round(total_elapsed_time, 3),
+                        }
                         
                         yield {
                             "type": "result",
@@ -814,23 +839,25 @@ class MetadataCompletionAgent:
 
 # 便捷函数：创建元数据补全智能体实例
 def create_metadata_agent(
-    api_key: str = None,
-    model_name: str = "qwen3-max",
-    model_type: str = "dashscope"
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+    base_url: Optional[str] = None
 ) -> MetadataCompletionAgent:
     """
-    创建元数据补全智能体实例
-    
+    创建元数据补全智能体实例（OpenAI-compatible）
+
     Args:
-        api_key: API密钥
-        model_name: 模型名称
-        model_type: 模型类型
-        
+        api_key: API密钥，默认从配置读取
+        model_name: 模型名称，默认从配置读取
+        base_url: API基础URL，默认从配置读取
+
     Returns:
         MetadataCompletionAgent: 智能体实例
     """
+    from config import ModelConfig
+
     return MetadataCompletionAgent(
-        api_key=api_key,
-        model_name=model_name,
-        model_type=model_type
+        api_key=api_key or ModelConfig.get_api_key(),
+        model_name=model_name or ModelConfig.get_model_name(),
+        base_url=base_url or ModelConfig.get_base_url(),
     )

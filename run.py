@@ -10,8 +10,7 @@ DATA AGENT 启动脚本
     python run.py --init-db          # 初始化数据库
     
 环境变量:
-    DASHSCOPE_API_KEY  - 阿里云百炼API密钥（使用通义千问系列模型）
-    OPENAI_API_KEY     - OpenAI API密钥（使用GPT系列模型）
+    OPENAI_API_KEY     - OpenAI 兼容 API 密钥
 """
 
 import argparse
@@ -31,7 +30,7 @@ def init_database():
     do_init()
 
 
-def start_server(host: str, port: int):
+def start_server(host: str, port: int, reload: bool = False):
     """启动服务器"""
     import uvicorn
     from backend.api.server import app
@@ -58,11 +57,11 @@ def start_server(host: str, port: int):
     """)
     
     # 检查API密钥配置
-    if not os.environ.get("DASHSCOPE_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+    if not os.environ.get("OPENAI_API_KEY"):
         print("\n[警告] 未检测到API密钥配置，AI智能体功能可能无法使用。")
-        print("请设置环境变量 DASHSCOPE_API_KEY 或 OPENAI_API_KEY\n")
+        print("请设置环境变量 OPENAI_API_KEY\n")
     
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, reload=reload)
 
 
 def main():
@@ -70,6 +69,7 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="服务器主机地址")
     parser.add_argument("--port", type=int, default=8000, help="服务器端口")
     parser.add_argument("--init-db", action="store_true", help="初始化数据库")
+    parser.add_argument("--reload", action="store_true", help="开发模式热更新")
     
     args = parser.parse_args()
     
@@ -87,7 +87,7 @@ def main():
         print("数据库初始化完成！\n")
     
     # 启动服务器
-    start_server(args.host, args.port)
+    start_server(args.host, args.port, reload=args.reload)
 
 
 if __name__ == "__main__":

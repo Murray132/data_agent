@@ -4,30 +4,51 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DATA AGENT - 数据治理智能体平台</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260327235500">
 </head>
-<body>
+<body class="ui-v2">
     <!-- 头部导航 -->
     <header class="header">
         <div class="header-content">
             <h1 class="logo">DATA AGENT</h1>
-            <p class="subtitle">数据治理智能体平台</p>
         </div>
         <nav class="nav">
-            <button class="nav-btn active" data-tab="tables">数据表管理</button>
-            <button class="nav-btn" data-tab="metadata-agent">元数据补全</button>
-            <button class="nav-btn" data-tab="sql-agent">SQL生成</button>
-            <button class="nav-btn" data-tab="tagging-agent">数据资产打标</button>
-            <button class="nav-btn" data-tab="sql-validation">SQL纠错校验</button>
-            <button class="nav-btn nav-btn-disabled" disabled>
-                安全分级分类
-                <span class="badge-dev">开发中</span>
-            </button>
-            <button class="nav-btn nav-btn-disabled" disabled>
-                标准落标建议
-                <span class="badge-dev">开发中</span>
-            </button>
+            <div class="nav-group">
+                <div class="nav-group-title">系统管理</div>
+                <div class="nav-group-buttons">
+                    <button class="nav-btn active" data-tab="tables">数据表管理</button>
+                    <button class="nav-btn" data-tab="datasources">数据源管理</button>
+                    <button class="nav-btn" data-tab="model-config">模型配置</button>
+                </div>
+            </div>
+            <div class="nav-group">
+                <div class="nav-group-title">智能能力</div>
+                <div class="nav-group-buttons">
+                    <button class="nav-btn" data-tab="metadata-agent">元数据补全</button>
+                    <button class="nav-btn" data-tab="sql-agent">SQL生成</button>
+                    <button class="nav-btn" data-tab="tagging-agent">数据资产打标</button>
+                    <button class="nav-btn" data-tab="sql-validation">SQL纠错校验</button>
+                </div>
+            </div>
+            <div class="nav-group">
+                <div class="nav-group-title">规划中</div>
+                <div class="nav-group-buttons">
+                    <button class="nav-btn nav-btn-disabled" disabled>
+                        安全分级分类
+                        <span class="badge-dev">开发中</span>
+                    </button>
+                    <button class="nav-btn nav-btn-disabled" disabled>
+                        标准落标建议
+                        <span class="badge-dev">开发中</span>
+                    </button>
+                </div>
+            </div>
         </nav>
+        <div class="user-panel" id="user-panel" style="display: none;">
+            <span id="current-user-label" class="user-label"></span>
+            <button id="logout-btn" class="btn btn-small btn-secondary" type="button">退出</button>
+        </div>
     </header>
 
     <!-- 主要内容区 -->
@@ -35,7 +56,10 @@
         <!-- 数据表管理页面 -->
         <section id="tables-section" class="tab-section active">
             <div class="section-header">
-                <h2>数据表管理</h2>
+                <div>
+                    <h2>数据表管理</h2>
+                    <div id="current-datasource-banner" class="datasource-context">当前数据源：本地数据源</div>
+                </div>
                 <div class="stats" id="db-stats"></div>
             </div>
             
@@ -123,6 +147,75 @@
             </div>
         </section>
 
+        <!-- 数据源管理页面 -->
+        <section id="datasources-section" class="tab-section">
+            <div class="section-header">
+                <h2>数据源管理</h2>
+                <p class="desc">管理系统内置本地数据源与外部接入数据源（如 MySQL）</p>
+            </div>
+
+            <div class="panel-container">
+                <div class="panel table-list-panel datasource-list-panel">
+                    <div class="panel-header">
+                        <h3>已配置数据源</h3>
+                        <button id="refresh-datasources-btn" class="btn btn-small btn-secondary" type="button">刷新</button>
+                    </div>
+                    <div class="panel-content">
+                        <div id="datasource-list" class="datasource-list"></div>
+                    </div>
+                </div>
+
+                <div class="panel table-detail-panel datasource-form-panel">
+                    <div class="panel-header">
+                        <h3>接入外部数据源（MySQL）</h3>
+                    </div>
+                    <div class="panel-content">
+                        <div class="form-group">
+                            <label for="ds-name">数据源名称</label>
+                            <input id="ds-name" class="form-input" type="text" placeholder="例如：生产MySQL">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-type">类型</label>
+                            <select id="ds-type" class="form-select">
+                                <option value="mysql">MySQL</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-host">Host</label>
+                            <input id="ds-host" class="form-input" type="text" placeholder="127.0.0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-port">Port</label>
+                            <input id="ds-port" class="form-input" type="number" value="3306">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-username">Username</label>
+                            <input id="ds-username" class="form-input" type="text" placeholder="root">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-password">Password</label>
+                            <input id="ds-password" class="form-input" type="password" placeholder="请输入密码">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-database">Database</label>
+                            <input id="ds-database" class="form-input" type="text" placeholder="your_db_name">
+                        </div>
+                        <div class="form-group">
+                            <label for="ds-charset">Charset</label>
+                            <input id="ds-charset" class="form-input" type="text" value="utf8mb4">
+                        </div>
+
+                        <div class="model-config-actions">
+                            <button id="test-datasource-btn" class="btn btn-info" type="button">测试连接</button>
+                            <button id="save-datasource-btn" class="btn btn-primary" type="button">保存数据源</button>
+                        </div>
+
+                        <div id="datasource-status" class="model-config-status">暂无操作记录</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- 元数据补全Agent页面 -->
         <section id="metadata-agent-section" class="tab-section">
             <div class="section-header">
@@ -187,6 +280,17 @@
                         <textarea id="sql-context" class="form-textarea" rows="2" 
                             placeholder="提供额外的背景信息或限制条件"></textarea>
                     </div>
+
+                    <div class="form-group">
+                        <label>推理参数：</label>
+                        <div class="model-key-row">
+                            <label class="checkbox-label" for="sql-enable-thinking">
+                                <input id="sql-enable-thinking" type="checkbox" checked>
+                                <span>Thinking</span>
+                            </label>
+                            <input id="sql-temperature" class="form-input" type="number" min="0" max="2" step="0.1" value="0.7" placeholder="Temperature">
+                        </div>
+                    </div>
                     
                     <div class="example-queries">
                         <h4>示例查询：</h4>
@@ -211,9 +315,15 @@
                     </div>
                     
                     <div class="action-buttons" id="sql-actions" style="display: none;">
-                        <button id="execute-sql-btn" class="btn btn-success">执行查询</button>
-                        <button id="copy-sql-btn" class="btn btn-secondary">复制SQL</button>
-                        <button id="explain-sql-btn" class="btn btn-info">解释SQL</button>
+                        <div class="sql-action-left">
+                            <button id="execute-sql-btn" class="btn btn-success">执行查询</button>
+                            <button id="copy-sql-btn" class="btn btn-secondary">复制SQL</button>
+                            <button id="explain-sql-btn" class="btn btn-info">解释SQL</button>
+                        </div>
+                        <div class="sql-token-panel" id="sql-token-panel">
+                            <div class="sql-token-title">Token 消耗统计</div>
+                            <div id="sql-token-stats" class="sql-token-stats">暂无数据</div>
+                        </div>
                     </div>
                     
                     <div id="sql-execution-result" class="execution-result" style="display: none;">
@@ -307,6 +417,17 @@
                                     <span class="meta-icon">💡</span>
                                     <span class="meta-text"></span>
                                 </span>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>校验参数：</label>
+                            <div class="model-key-row">
+                                <label class="checkbox-label" for="validation-enable-thinking">
+                                    <input id="validation-enable-thinking" type="checkbox" checked>
+                                    <span>Thinking</span>
+                                </label>
+                                <input id="validation-temperature" class="form-input" type="number" min="0" max="2" step="0.1" value="0.7" placeholder="Temperature">
                             </div>
                         </div>
                         
@@ -405,12 +526,107 @@
                 </div>
             </div>
         </section>
+
+        <!-- 模型配置页面 -->
+        <section id="model-config-section" class="tab-section">
+            <div class="section-header">
+                <h2>模型配置</h2>
+                <p class="desc">配置模型供应商连接信息，包含 base_url、api_key、model_name</p>
+            </div>
+
+            <div class="model-config-layout">
+                <div class="panel model-config-panel">
+                    <div class="panel-header">
+                        <h3>连接参数</h3>
+                    </div>
+                    <div class="panel-content">
+                        <details class="model-current-details">
+                            <summary>当前接入模型信息</summary>
+                            <div id="model-current-info" class="model-current-info">
+                                <div class="model-current-line">供应商：未加载</div>
+                                <div class="model-current-line">模型：未加载</div>
+                                <div class="model-current-line">Base URL：未加载</div>
+                            </div>
+                        </details>
+
+                        <div class="form-group">
+                            <label for="model-base-url">Base URL</label>
+                            <input id="model-base-url" class="form-input" type="text"
+                                placeholder="例如: https://api.openai.com/v1">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="model-api-key">API Key</label>
+                            <div class="model-key-row">
+                                <input id="model-api-key" class="form-input" type="password"
+                                    placeholder="请输入 API Key">
+                                <button id="toggle-api-key-visibility" class="btn btn-secondary btn-small" type="button">显示</button>
+                            </div>
+                            <div class="model-hint">留空表示沿用当前已保存的 API Key</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="model-name">Model Name</label>
+                            <input id="model-name" class="form-input" type="text"
+                                placeholder="例如: gpt-4.1 / qwen3.5-122b-a10b">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="model-temperature">Temperature</label>
+                            <input id="model-temperature" class="form-input" type="number" min="0" max="2" step="0.1" value="0.7">
+                            <div class="model-hint">常用范围 0.0 - 1.0，越低越稳定，越高越发散。</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="checkbox-label" for="model-enable-thinking">
+                                <input id="model-enable-thinking" type="checkbox" checked>
+                                <span>启用 Thinking / Reasoning 输出</span>
+                            </label>
+                            <div class="model-hint">关闭后，兼容端点会更倾向只返回正文，不返回 reasoning 内容。</div>
+                        </div>
+
+                        <div class="model-config-actions">
+                            <button id="load-model-config-btn" class="btn btn-secondary" type="button">加载当前配置</button>
+                            <button id="test-model-config-btn" class="btn btn-info" type="button">测试配置</button>
+                            <button id="save-model-config-btn" class="btn btn-primary" type="button">保存配置</button>
+                        </div>
+
+                        <div id="model-config-status" class="model-config-status">
+                            暂无操作记录
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
     </main>
 
     <!-- 加载遮罩 -->
     <div id="loading-overlay" class="loading-overlay">
         <div class="loading-spinner"></div>
         <p id="loading-text">正在处理...</p>
+    </div>
+
+    <!-- 登录遮罩 -->
+    <div id="auth-overlay" class="auth-overlay">
+        <div class="auth-card">
+            <h3>登录 DATA AGENT</h3>
+            <p class="auth-tip">请先登录后再使用系统功能</p>
+            <div class="form-group">
+                <label for="auth-username">用户名</label>
+                <input id="auth-username" class="form-input" type="text" placeholder="admin / user">
+            </div>
+            <div class="form-group">
+                <label for="auth-password">密码</label>
+                <input id="auth-password" class="form-input" type="password" placeholder="请输入密码">
+            </div>
+            <button id="auth-login-btn" class="btn btn-primary btn-large" type="button">登录</button>
+            <p id="auth-error" class="auth-error"></p>
+            <div class="auth-demo">
+                示例账号：
+                <code>admin/admin123</code>、
+                <code>user/viewer123</code>
+            </div>
+        </div>
     </div>
 
     <!-- 弹窗 -->
@@ -431,6 +647,6 @@
     <!-- 提示消息 -->
     <div id="toast" class="toast"></div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=20260327235500"></script>
 </body>
 </html>

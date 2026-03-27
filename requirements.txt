@@ -15,6 +15,8 @@ pydantic>=2.0.0
 httpx>=0.25.0
 aiohttp>=3.9.0
 
-# 可选：模型API客户端
-dashscope>=1.14.0  # 阿里云百炼
-openai>=1.0.0      # OpenAI API
+# 可选：模型API客户端（OpenAI兼容）
+openai>=1.0.0
+
+# 可选：MySQL 数据源连接
+pymysql>=1.1.0

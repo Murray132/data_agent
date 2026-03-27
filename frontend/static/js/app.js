@@ -9,6 +9,17 @@
 
 // ============ API配置 ============
 const API_BASE = '';  // 当前域名
+const LOCAL_DATASOURCE_ID = 'local_finance';
+const LOCAL_DATASOURCE = {
+    id: LOCAL_DATASOURCE_ID,
+    name: '本地数据源',
+    type: 'sqlite',
+    engine: 'sqlite',
+    database: 'data/finance.db',
+    is_builtin: true,
+    status: 'online',
+    description: '系统内置本地数据源'
+};
 
 // ============ 全局状态 ============
 const state = {
@@ -24,7 +35,17 @@ const state = {
     existingTags: null,
     // SQL Validation状态
     validationResult: null,
-    generatedTestSQL: null
+    generatedTestSQL: null,
+    // 模型配置状态
+    modelConfigLoaded: false,
+    currentModelConfig: null,
+    // 数据源状态
+    dataSources: [LOCAL_DATASOURCE],
+    selectedDataSourceId: LOCAL_DATASOURCE_ID,
+    // 认证状态
+    currentUser: null,
+    permissions: [],
+    appInitialized: false
 };
 
 // ============ 工具函数 ============
@@ -42,6 +63,9 @@ async function fetchAPI(url, options = {}) {
     const response = await fetch(API_BASE + url, { ...defaultOptions, ...options });
     
     if (!response.ok) {
+        if (response.status === 401) {
+            showAuthOverlay();
+        }
         const error = await response.json().catch(() => ({ detail: '请求失败' }));
         throw new Error(error.detail || '请求失败');
     }
@@ -96,7 +120,694 @@ function showModal(title, content, onConfirm) {
  * 隐藏弹窗
  */
 function hideModal() {
-    document.getElementById('modal').classList.remove('show');
+    const modalEl = document.getElementById('modal');
+    modalEl.classList.remove('show');
+    modalEl.classList.remove('modal-explain');
+}
+
+function hasPermission(permission) {
+    return state.permissions.includes(permission);
+}
+
+function getAvailableDataSources() {
+    return (state.dataSources && state.dataSources.length > 0) ? state.dataSources : [LOCAL_DATASOURCE];
+}
+
+function getSelectedDataSource() {
+    const source = getAvailableDataSources().find((item) => item.id === state.selectedDataSourceId);
+    return source || LOCAL_DATASOURCE;
+}
+
+function isLocalDataSourceSelected() {
+    return getSelectedDataSource().id === LOCAL_DATASOURCE_ID;
+}
+
+function buildDataSourceScopedUrl(path) {
+    const url = new URL(path, window.location.origin);
+    url.searchParams.set('datasource_id', getSelectedDataSource().id);
+    return `${url.pathname}${url.search}`;
+}
+
+function updateCurrentDataSourceBanner() {
+    const bannerEl = document.getElementById('current-datasource-banner');
+    if (!bannerEl) return;
+    const source = getSelectedDataSource();
+    const readonlyText = isLocalDataSourceSelected() ? '' : '，当前为只读浏览';
+    bannerEl.textContent = `当前数据源：${source.name} (${String(source.type || '').toUpperCase()})${readonlyText}`;
+}
+
+function isThinkingEnabled() {
+    if (state.currentModelConfig && typeof state.currentModelConfig.enable_thinking === 'boolean') {
+        return state.currentModelConfig.enable_thinking;
+    }
+    const checkbox = document.getElementById('model-enable-thinking');
+    return checkbox ? Boolean(checkbox.checked) : true;
+}
+
+function getDefaultTemperature() {
+    if (state.currentModelConfig && typeof state.currentModelConfig.temperature === 'number') {
+        return state.currentModelConfig.temperature;
+    }
+    const input = document.getElementById('model-temperature');
+    const value = Number(input?.value || 0.7);
+    return Number.isNaN(value) ? 0.7 : value;
+}
+
+function syncInferenceControlsWithConfig(config) {
+    const thinkingValue = config && typeof config.enable_thinking === 'boolean' ? config.enable_thinking : true;
+    const temperatureValue = config && typeof config.temperature === 'number' ? config.temperature : 0.7;
+
+    const sqlThinking = document.getElementById('sql-enable-thinking');
+    const validationThinking = document.getElementById('validation-enable-thinking');
+    const sqlTemp = document.getElementById('sql-temperature');
+    const validationTemp = document.getElementById('validation-temperature');
+
+    if (sqlThinking) sqlThinking.checked = thinkingValue;
+    if (validationThinking) validationThinking.checked = thinkingValue;
+    if (sqlTemp) sqlTemp.value = String(temperatureValue);
+    if (validationTemp) validationTemp.value = String(temperatureValue);
+}
+
+function getSQLInferenceOptions() {
+    const thinkingEl = document.getElementById('sql-enable-thinking');
+    const tempEl = document.getElementById('sql-temperature');
+    const temperature = Number(tempEl?.value || getDefaultTemperature());
+    return {
+        enable_thinking: thinkingEl ? Boolean(thinkingEl.checked) : isThinkingEnabled(),
+        temperature: Number.isNaN(temperature) ? getDefaultTemperature() : temperature
+    };
+}
+
+function getValidationInferenceOptions() {
+    const thinkingEl = document.getElementById('validation-enable-thinking');
+    const tempEl = document.getElementById('validation-temperature');
+    const temperature = Number(tempEl?.value || getDefaultTemperature());
+    return {
+        enable_thinking: thinkingEl ? Boolean(thinkingEl.checked) : isThinkingEnabled(),
+        temperature: Number.isNaN(temperature) ? getDefaultTemperature() : temperature
+    };
+}
+
+function getVisibleTabButtons() {
+    return Array.from(document.querySelectorAll('.nav-btn[data-tab]')).filter((btn) => {
+        if (btn.style.display === 'none') return false;
+        return window.getComputedStyle(btn).display !== 'none';
+    });
+}
+
+function showAuthOverlay(message = '') {
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.classList.add('show');
+    if (message) {
+        const errorEl = document.getElementById('auth-error');
+        if (errorEl) errorEl.textContent = message;
+    }
+}
+
+function hideAuthOverlay() {
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.classList.remove('show');
+    const errorEl = document.getElementById('auth-error');
+    if (errorEl) errorEl.textContent = '';
+}
+
+function applyPermissionUI() {
+    const navPermissionMap = {
+        'tables': 'tables.read',
+        'datasources': 'datasource.manage',
+        'metadata-agent': 'agent.metadata',
+        'sql-agent': 'agent.sql',
+        'tagging-agent': 'agent.tagging',
+        'sql-validation': 'agent.validation',
+        'model-config': 'model_config.manage'
+    };
+
+    document.querySelectorAll('.nav-btn[data-tab]').forEach(btn => {
+        const tab = btn.dataset.tab;
+        const permission = navPermissionMap[tab];
+        if (!permission) return;
+        const allowed = hasPermission(permission);
+        btn.style.display = allowed ? '' : 'none';
+    });
+
+    const buttonPermissionMap = {
+        'apply-metadata-btn': 'tables.write',
+        'generate-tags-btn': 'agent.tagging',
+        'apply-tags-btn': 'agent.tagging',
+        'validate-sql-btn': 'agent.validation',
+        'generate-random-sql': 'agent.validation',
+        'execute-sql-btn': 'sql.execute',
+        'load-model-config-btn': 'model_config.manage',
+        'test-model-config-btn': 'model_config.manage',
+        'save-model-config-btn': 'model_config.manage',
+        'refresh-datasources-btn': 'datasource.manage',
+        'test-datasource-btn': 'datasource.manage',
+        'save-datasource-btn': 'datasource.manage'
+    };
+
+    Object.entries(buttonPermissionMap).forEach(([id, permission]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const allowed = hasPermission(permission);
+        el.style.display = allowed ? '' : 'none';
+    });
+
+    // 如果当前激活标签被权限隐藏，自动切换到第一个可见标签
+    const activeBtn = document.querySelector('.nav-btn.active[data-tab]');
+    const firstVisibleBtn = getVisibleTabButtons()[0];
+    if (!activeBtn && firstVisibleBtn) {
+        switchMainTab(firstVisibleBtn.dataset.tab);
+        return;
+    }
+    if (activeBtn && activeBtn.style.display === 'none' && firstVisibleBtn) {
+        switchMainTab(firstVisibleBtn.dataset.tab);
+    }
+}
+
+function switchMainTab(tab) {
+    if (!tab) return;
+
+    const targetBtn = document.querySelector(`.nav-btn[data-tab="${tab}"]`);
+    const targetSection = document.getElementById(`${tab}-section`);
+    if (!targetBtn || !targetSection) {
+        console.error('[TabSwitch] 无法切换标签:', { tab, targetBtn, targetSection });
+        showToast(`页面切换失败: 未找到 ${tab} 对应区域`, 'error');
+        return;
+    }
+
+    document.querySelectorAll('.nav-btn[data-tab]').forEach(b => b.classList.remove('active'));
+    targetBtn.classList.add('active');
+
+    document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+    targetSection.classList.add('active');
+
+    if (tab === 'model-config' && !state.modelConfigLoaded) {
+        loadModelConfig();
+    }
+}
+
+function updateUserPanel() {
+    const panel = document.getElementById('user-panel');
+    const label = document.getElementById('current-user-label');
+    if (!panel || !label) return;
+    if (!state.currentUser) {
+        panel.style.display = 'none';
+        return;
+    }
+
+    panel.style.display = 'flex';
+    label.textContent = `${state.currentUser.display_name} (${state.currentUser.role})`;
+}
+
+function initializeAppData() {
+    if (state.appInitialized) return;
+    state.appInitialized = true;
+
+    loadDatabaseSummary();
+    loadTableList();
+    if (hasPermission('agent.metadata')) {
+        loadMissingMetadata();
+    }
+    loadERDiagram();
+    if (hasPermission('datasource.manage')) {
+        loadDataSources(false);
+    }
+    if (hasPermission('model_config.manage')) {
+        loadModelConfig(false);
+    }
+}
+
+async function checkAuthSession() {
+    try {
+        const data = await fetchAPI('/api/auth/me');
+        state.currentUser = data.user;
+        state.permissions = data.user.permissions || [];
+        updateUserPanel();
+        applyPermissionUI();
+        hideAuthOverlay();
+        return true;
+    } catch (error) {
+        state.currentUser = null;
+        state.permissions = [];
+        updateUserPanel();
+        showAuthOverlay('请先登录');
+        return false;
+    }
+}
+
+async function login() {
+    const usernameEl = document.getElementById('auth-username');
+    const passwordEl = document.getElementById('auth-password');
+    const errorEl = document.getElementById('auth-error');
+    const username = usernameEl ? usernameEl.value.trim() : '';
+    const password = passwordEl ? passwordEl.value : '';
+
+    if (!username || !password) {
+        if (errorEl) errorEl.textContent = '请输入用户名和密码';
+        return;
+    }
+
+    try {
+        const result = await fetchAPI('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username, password })
+        });
+        state.currentUser = result.user;
+        state.permissions = result.user.permissions || [];
+        updateUserPanel();
+        applyPermissionUI();
+        hideAuthOverlay();
+        initializeAppData();
+        showToast('登录成功', 'success');
+    } catch (error) {
+        if (errorEl) errorEl.textContent = error.message;
+    }
+}
+
+async function logout() {
+    try {
+        await fetchAPI('/api/auth/logout', { method: 'POST' });
+    } catch (error) {
+        console.warn('退出登录请求失败:', error.message);
+    } finally {
+        state.currentUser = null;
+        state.permissions = [];
+        updateUserPanel();
+        showAuthOverlay('已退出登录');
+    }
+}
+
+/**
+ * 更新模型配置状态提示
+ */
+function updateModelConfigStatus(message, type = 'info') {
+    const statusEl = document.getElementById('model-config-status');
+    if (!statusEl) return;
+
+    const colorMap = {
+        info: { bg: '#f7f9fc', border: '#dbe3ef', color: '#4b5563' },
+        success: { bg: '#f0fdf4', border: '#86efac', color: '#166534' },
+        error: { bg: '#fef2f2', border: '#fca5a5', color: '#b91c1c' }
+    };
+    const style = colorMap[type] || colorMap.info;
+    statusEl.textContent = message;
+    statusEl.style.background = style.bg;
+    statusEl.style.borderColor = style.border;
+    statusEl.style.color = style.color;
+}
+
+/**
+ * 读取模型配置表单
+ */
+function getModelConfigFormValues() {
+    return {
+        base_url: document.getElementById('model-base-url').value.trim(),
+        api_key: document.getElementById('model-api-key').value.trim(),
+        model_name: document.getElementById('model-name').value.trim(),
+        enable_thinking: Boolean(document.getElementById('model-enable-thinking')?.checked),
+        temperature: Number(document.getElementById('model-temperature')?.value || 0.7)
+    };
+}
+
+/**
+ * 推断模型供应商名称
+ */
+function inferModelProvider(baseUrl) {
+    if (!baseUrl) return '未知';
+    const value = baseUrl.toLowerCase();
+    if (value.includes('openai.com')) return 'OpenAI';
+    if (value.includes('anthropic.com')) return 'Anthropic';
+    if (value.includes('aliyuncs.com')) return 'OpenAI-Compatible Endpoint';
+    if (value.includes('deepseek.com')) return 'DeepSeek';
+    if (value.includes('volces.com') || value.includes('ark.cn-beijing')) return '火山方舟';
+    return '兼容 OpenAI 的自定义供应商';
+}
+
+/**
+ * 渲染当前模型信息（折叠框）
+ */
+function renderCurrentModelInfo(config) {
+    const infoEl = document.getElementById('model-current-info');
+    if (!infoEl) return;
+
+    const provider = inferModelProvider(config.base_url);
+    infoEl.innerHTML = `
+        <div class="model-current-line">供应商：${provider}</div>
+        <div class="model-current-line">模型：${config.model_name || '未配置'}</div>
+        <div class="model-current-line">Base URL：${config.base_url || '未配置'}</div>
+        <div class="model-current-line">Thinking：${config.enable_thinking ? '开启' : '关闭'}</div>
+        <div class="model-current-line">Temperature：${config.temperature ?? 0.7}</div>
+    `;
+}
+
+/**
+ * 回填模型配置表单
+ */
+function setModelConfigFormValues(config) {
+    document.getElementById('model-base-url').value = config.base_url || '';
+    document.getElementById('model-api-key').value = '';
+    document.getElementById('model-name').value = config.model_name || '';
+    const thinkingCheckbox = document.getElementById('model-enable-thinking');
+    if (thinkingCheckbox) {
+        thinkingCheckbox.checked = config.enable_thinking !== false;
+    }
+    const temperatureInput = document.getElementById('model-temperature');
+    if (temperatureInput) {
+        temperatureInput.value = String(config.temperature ?? 0.7);
+    }
+    syncInferenceControlsWithConfig(config);
+    renderCurrentModelInfo(config);
+}
+
+/**
+ * 校验模型配置输入
+ */
+function validateModelConfigInput(configData) {
+    if (!configData.base_url) {
+        throw new Error('Base URL 不能为空');
+    }
+    if (!configData.model_name) {
+        throw new Error('Model Name 不能为空');
+    }
+    if (Number.isNaN(Number(configData.temperature))) {
+        throw new Error('Temperature 不合法');
+    }
+    if (!configData.api_key) {
+        throw new Error('API Key 不能为空，请输入或先加载已有配置');
+    }
+}
+
+/**
+ * 构造模型配置请求参数（API Key 可沿用已有配置）
+ */
+function buildModelConfigPayload() {
+    const formData = getModelConfigFormValues();
+    const fallbackKey = state.currentModelConfig ? (state.currentModelConfig.full_key || '') : '';
+
+    return {
+        base_url: formData.base_url,
+        model_name: formData.model_name,
+        api_key: formData.api_key || fallbackKey,
+        enable_thinking: formData.enable_thinking,
+        temperature: formData.temperature
+    };
+}
+
+/**
+ * 加载当前模型配置
+ */
+async function loadModelConfig(withLoading = true) {
+    if (withLoading) showLoading('正在加载模型配置...');
+
+    try {
+        const configData = await fetchAPI('/api/model/config');
+        state.currentModelConfig = configData;
+        setModelConfigFormValues(configData);
+        state.modelConfigLoaded = true;
+        updateModelConfigStatus('已加载当前模型配置', 'success');
+    } catch (error) {
+        updateModelConfigStatus('加载模型配置失败: ' + error.message, 'error');
+        showToast('加载模型配置失败: ' + error.message, 'error');
+    } finally {
+        if (withLoading) hideLoading();
+    }
+}
+
+/**
+ * 测试模型配置可用性
+ */
+async function testModelConfig() {
+    try {
+        const payload = buildModelConfigPayload();
+        validateModelConfigInput(payload);
+
+        showLoading('正在测试模型连接...');
+        const result = await fetchAPI('/api/model/test', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+
+        const shortResponse = result.response ? ` | 返回: ${String(result.response).slice(0, 80)}` : '';
+        updateModelConfigStatus(`测试成功: ${result.message || '连接可用'}${shortResponse}`, 'success');
+        showToast('模型配置测试成功', 'success');
+    } catch (error) {
+        updateModelConfigStatus('测试失败: ' + error.message, 'error');
+        showToast('模型配置测试失败: ' + error.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+/**
+ * 保存模型配置
+ */
+async function saveModelConfig() {
+    try {
+        const payload = buildModelConfigPayload();
+        validateModelConfigInput(payload);
+
+        showLoading('正在保存模型配置...');
+        const result = await fetchAPI('/api/model/config', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+
+        state.currentModelConfig = {
+            base_url: payload.base_url,
+            model_name: payload.model_name,
+            full_key: payload.api_key,
+            enable_thinking: payload.enable_thinking,
+            temperature: payload.temperature
+        };
+        renderCurrentModelInfo(state.currentModelConfig);
+        document.getElementById('model-api-key').value = '';
+
+        updateModelConfigStatus('保存成功，后续 Agent 调用将使用新配置', 'success');
+        showToast('模型配置已保存', 'success');
+        state.modelConfigLoaded = true;
+    } catch (error) {
+        updateModelConfigStatus('保存失败: ' + error.message, 'error');
+        showToast('保存模型配置失败: ' + error.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+/**
+ * 切换 API Key 显示状态
+ */
+function toggleApiKeyVisibility() {
+    const inputEl = document.getElementById('model-api-key');
+    const toggleBtn = document.getElementById('toggle-api-key-visibility');
+    if (!inputEl || !toggleBtn) return;
+
+    const isPassword = inputEl.type === 'password';
+    inputEl.type = isPassword ? 'text' : 'password';
+    toggleBtn.textContent = isPassword ? '隐藏' : '显示';
+}
+
+// ============ 数据源管理模块 ============
+
+function updateDataSourceStatus(message, type = 'info') {
+    const statusEl = document.getElementById('datasource-status');
+    if (!statusEl) return;
+    const colorMap = {
+        info: { bg: '#f7f9fc', border: '#dbe3ef', color: '#4b5563' },
+        success: { bg: '#f0fdf4', border: '#86efac', color: '#166534' },
+        error: { bg: '#fef2f2', border: '#fca5a5', color: '#b91c1c' }
+    };
+    const style = colorMap[type] || colorMap.info;
+    statusEl.textContent = message;
+    statusEl.style.background = style.bg;
+    statusEl.style.borderColor = style.border;
+    statusEl.style.color = style.color;
+}
+
+function getDataSourceFormValues() {
+    return {
+        name: (document.getElementById('ds-name')?.value || '').trim(),
+        type: (document.getElementById('ds-type')?.value || 'mysql').trim(),
+        host: (document.getElementById('ds-host')?.value || '').trim(),
+        port: Number(document.getElementById('ds-port')?.value || 3306),
+        username: (document.getElementById('ds-username')?.value || '').trim(),
+        password: (document.getElementById('ds-password')?.value || '').trim(),
+        database: (document.getElementById('ds-database')?.value || '').trim(),
+        charset: (document.getElementById('ds-charset')?.value || 'utf8mb4').trim()
+    };
+}
+
+function validateDataSourceForm(payload) {
+    if (!payload.name) throw new Error('数据源名称不能为空');
+    if (!payload.host) throw new Error('Host 不能为空');
+    if (!payload.port || Number.isNaN(payload.port)) throw new Error('Port 不合法');
+    if (!payload.username) throw new Error('Username 不能为空');
+    if (!payload.password) throw new Error('Password 不能为空');
+    if (!payload.database) throw new Error('Database 不能为空');
+}
+
+function renderDataSourceList(sources) {
+    const listEl = document.getElementById('datasource-list');
+    if (!listEl) return;
+    if (!sources || sources.length === 0) {
+        listEl.innerHTML = '<div class="placeholder">暂无数据源</div>';
+        return;
+    }
+
+    listEl.innerHTML = sources.map((s) => {
+        const builtIn = s.is_builtin ? '<span class="pk-badge">内置</span>' : '<span class="notnull-badge">外部</span>';
+        const active = s.id === getSelectedDataSource().id ? '<span class="pk-badge">当前使用</span>' : '';
+        const endpoint = s.type === 'sqlite'
+            ? (s.database || '-')
+            : `${s.host || '-'}:${s.port || '-'} / ${s.database || '-'}`;
+        const actions = `
+            <div class="datasource-actions">
+                <button class="btn btn-small btn-primary" data-action="use" data-id="${s.id}" type="button">使用</button>
+                ${s.is_builtin ? '' : `
+                <button class="btn btn-small btn-info" data-action="test" data-id="${s.id}" type="button">测试</button>
+                <button class="btn btn-small btn-secondary" data-action="delete" data-id="${s.id}" type="button">删除</button>
+                `}
+            </div>`;
+        return `
+            <div class="datasource-item">
+                <div class="datasource-head">
+                    <div class="name">${escapeHtml(s.name || '未命名数据源')}</div>
+                    <div>${builtIn}${active}</div>
+                </div>
+                <div class="datasource-meta">类型：${escapeHtml((s.type || '').toUpperCase())}</div>
+                <div class="datasource-meta">连接：${escapeHtml(endpoint)}</div>
+                ${actions}
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadDataSources(withLoading = true) {
+    if (withLoading) showLoading('正在加载数据源...');
+    try {
+        const data = await fetchAPI('/api/datasources');
+        const sources = data.sources || [];
+        state.dataSources = sources.length > 0 ? sources : [LOCAL_DATASOURCE];
+        if (!state.dataSources.some((item) => item.id === state.selectedDataSourceId)) {
+            state.selectedDataSourceId = LOCAL_DATASOURCE_ID;
+        }
+        renderDataSourceList(state.dataSources);
+        updateCurrentDataSourceBanner();
+        updateDataSourceStatus(`已加载 ${data.total || 0} 个数据源`, 'success');
+    } catch (error) {
+        state.dataSources = [LOCAL_DATASOURCE];
+        state.selectedDataSourceId = LOCAL_DATASOURCE_ID;
+        renderDataSourceList(state.dataSources);
+        updateCurrentDataSourceBanner();
+        updateDataSourceStatus('加载失败: ' + error.message, 'error');
+        showToast('加载数据源失败: ' + error.message, 'error');
+    } finally {
+        if (withLoading) hideLoading();
+    }
+}
+
+async function switchActiveDataSource(sourceId) {
+    const nextSource = getAvailableDataSources().find((item) => item.id === sourceId);
+    if (!nextSource) {
+        showToast('数据源不存在', 'error');
+        return;
+    }
+    state.selectedDataSourceId = sourceId;
+    state.currentTable = null;
+    state.currentPage = 0;
+    state.totalRows = 0;
+    updateCurrentDataSourceBanner();
+    renderDataSourceList(getAvailableDataSources());
+    document.getElementById('detail-title').textContent = '选择一个表查看详情';
+    document.getElementById('table-description').innerHTML = '';
+    document.querySelector('#columns-table tbody').innerHTML = '';
+    document.querySelector('#data-table thead').innerHTML = '';
+    document.querySelector('#data-table tbody').innerHTML = '';
+    document.getElementById('relations-content').innerHTML = '';
+    document.getElementById('data-info').textContent = '';
+    document.getElementById('page-info').textContent = '';
+    document.getElementById('prev-page').disabled = true;
+    document.getElementById('next-page').disabled = true;
+    await Promise.all([
+        loadDatabaseSummary(),
+        loadTableList(),
+        loadERDiagram()
+    ]);
+    showToast(`已切换到数据源: ${nextSource.name}`, 'success');
+}
+
+async function testDataSource() {
+    try {
+        const payload = getDataSourceFormValues();
+        validateDataSourceForm(payload);
+        showLoading('正在测试数据源连接...');
+        const result = await fetchAPI('/api/datasources/test', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        updateDataSourceStatus(result.message || '连接测试成功', 'success');
+        showToast('数据源连接测试成功', 'success');
+    } catch (error) {
+        updateDataSourceStatus('测试失败: ' + error.message, 'error');
+        showToast('数据源测试失败: ' + error.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function saveDataSource() {
+    try {
+        const payload = getDataSourceFormValues();
+        validateDataSourceForm(payload);
+        showLoading('正在保存数据源...');
+        const result = await fetchAPI('/api/datasources', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        updateDataSourceStatus(result.message || '保存成功', 'success');
+        showToast('数据源已保存', 'success');
+        await loadDataSources(false);
+    } catch (error) {
+        updateDataSourceStatus('保存失败: ' + error.message, 'error');
+        showToast('保存数据源失败: ' + error.message, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function testDataSourceById(sourceId) {
+    const source = (state.dataSources || []).find((x) => x.id === sourceId);
+    if (!source) {
+        showToast('数据源不存在', 'error');
+        return;
+    }
+    try {
+        showLoading('正在测试数据源连接...');
+        const result = await fetchAPI(`/api/datasources/${sourceId}/test`, { method: 'POST' });
+        updateDataSourceStatus(`${source.name}: ${result.message || '连接测试成功'}`, 'success');
+        showToast(`${source.name} 测试成功`, 'success');
+    } catch (error) {
+        updateDataSourceStatus(`${source.name}: 测试失败 - ${error.message}`, 'error');
+        showToast(`${source.name} 测试失败: ${error.message}`, 'error');
+    } finally {
+        hideLoading();
+    }
+}
+
+async function deleteDataSource(sourceId) {
+    try {
+        await fetchAPI(`/api/datasources/${sourceId}`, { method: 'DELETE' });
+        if (state.selectedDataSourceId === sourceId) {
+            state.selectedDataSourceId = LOCAL_DATASOURCE_ID;
+            updateCurrentDataSourceBanner();
+        }
+        showToast('数据源已删除', 'success');
+        await loadDataSources(false);
+        if (state.selectedDataSourceId === LOCAL_DATASOURCE_ID) {
+            await Promise.all([loadDatabaseSummary(), loadTableList(), loadERDiagram()]);
+        }
+    } catch (error) {
+        showToast('删除失败: ' + error.message, 'error');
+    }
 }
 
 // ============ 数据表管理模块 ============
@@ -106,7 +817,7 @@ function hideModal() {
  */
 async function loadDatabaseSummary() {
     try {
-        const data = await fetchAPI('/api/database/summary');
+        const data = await fetchAPI(buildDataSourceScopedUrl('/api/database/summary'));
         
         document.getElementById('db-stats').innerHTML = `
             <div class="stat-item">
@@ -132,12 +843,14 @@ async function loadDatabaseSummary() {
  */
 async function loadTableList() {
     try {
-        const data = await fetchAPI('/api/tables');
+        const data = await fetchAPI(buildDataSourceScopedUrl('/api/tables'));
         state.tables = data.tables;
         
         renderTableList(state.tables);
-        populateTableSelect(state.tables);
-        populateTaggingTableSelect(state.tables);
+        if (isLocalDataSourceSelected()) {
+            populateTableSelect(state.tables);
+            populateTaggingTableSelect(state.tables);
+        }
         
     } catch (error) {
         console.error('加载表列表失败:', error);
@@ -197,14 +910,15 @@ async function selectTable(tableName) {
  */
 async function loadTableSchema(tableName) {
     try {
-        const schema = await fetchAPI(`/api/tables/${tableName}/schema`);
+        const schema = await fetchAPI(buildDataSourceScopedUrl(`/api/tables/${tableName}/schema`));
+        const readonly = !isLocalDataSourceSelected();
         
         // 渲染表描述
         const descEl = document.getElementById('table-description');
         descEl.innerHTML = `
             <div class="label">表描述</div>
             <div class="text">${schema.description || '<span style="color:#999">暂无描述</span>'}</div>
-            <button class="edit-btn" onclick="editTableDescription('${tableName}', '${schema.description || ''}')">编辑</button>
+            ${readonly ? '<span style="color:#999">外部数据源暂不支持在线编辑描述</span>' : `<button class="edit-btn" onclick="editTableDescription('${tableName}', '${schema.description || ''}')">编辑</button>`}
         `;
         
         // 渲染字段列表
@@ -219,10 +933,10 @@ async function loadTableSchema(tableName) {
                 </td>
                 <td>${col.description || '<span style="color:#999">暂无</span>'}</td>
                 <td>
-                    <button class="btn btn-small btn-secondary" 
+                    ${readonly ? '<span style="color:#999">只读</span>' : `<button class="btn btn-small btn-secondary" 
                         onclick="editColumnDescription('${tableName}', '${col.name}', '${col.description || ''}')">
                         编辑
-                    </button>
+                    </button>`}
                 </td>
             </tr>
         `).join('');
@@ -238,7 +952,7 @@ async function loadTableSchema(tableName) {
 async function loadTableData(tableName, page = 0) {
     try {
         const offset = page * state.pageSize;
-        const data = await fetchAPI(`/api/tables/${tableName}/data?limit=${state.pageSize}&offset=${offset}`);
+        const data = await fetchAPI(buildDataSourceScopedUrl(`/api/tables/${tableName}/data?limit=${state.pageSize}&offset=${offset}`));
         
         state.totalRows = data.total;
         state.currentPage = page;
@@ -280,7 +994,7 @@ function formatCell(value) {
  */
 async function loadTableRelations(tableName) {
     try {
-        const relations = await fetchAPI(`/api/tables/${tableName}/related`);
+        const relations = await fetchAPI(buildDataSourceScopedUrl(`/api/tables/${tableName}/related`));
         
         const contentEl = document.getElementById('relations-content');
         let html = '';
@@ -330,6 +1044,15 @@ async function loadTableRelations(tableName) {
  * 编辑表描述
  */
 function editTableDescription(tableName, currentDesc) {
+    if (!isLocalDataSourceSelected()) {
+        showToast('外部数据源当前仅支持只读浏览', 'error');
+        return;
+    }
+    if (!hasPermission('tables.write')) {
+        showToast('当前账号没有编辑元数据权限', 'error');
+        return;
+    }
+
     showModal('编辑表描述', `
         <div class="form-group">
             <label>表名：${tableName}</label>
@@ -355,6 +1078,15 @@ function editTableDescription(tableName, currentDesc) {
  * 编辑字段描述
  */
 function editColumnDescription(tableName, columnName, currentDesc) {
+    if (!isLocalDataSourceSelected()) {
+        showToast('外部数据源当前仅支持只读浏览', 'error');
+        return;
+    }
+    if (!hasPermission('tables.write')) {
+        showToast('当前账号没有编辑元数据权限', 'error');
+        return;
+    }
+
     showModal('编辑字段描述', `
         <div class="form-group">
             <label>字段：${tableName}.${columnName}</label>
@@ -429,16 +1161,15 @@ async function generateMetadata() {
     resultEl.innerHTML = `
         <div class="thinking-process" id="metadata-thinking">
             <h4>🤖 AI 执行过程</h4>
-            <div class="steps-container" id="metadata-steps"></div>
-            <div class="thinking-content" id="metadata-thinking-content"></div>
+            <div class="sql-step-board" id="metadata-step-board"></div>
         </div>
         <div class="final-result" id="metadata-final-result" style="display:none;"></div>
     `;
     document.getElementById('metadata-actions').style.display = 'none';
     
-    const stepsEl = document.getElementById('metadata-steps');
-    const thinkingEl = document.getElementById('metadata-thinking-content');
+    const processBoardEl = document.getElementById('metadata-step-board');
     const finalResultEl = document.getElementById('metadata-final-result');
+    resetMetadataProcessState();
     
     try {
         // 使用 SSE 流式请求
@@ -464,7 +1195,7 @@ async function generateMetadata() {
                 if (line.startsWith('data: ')) {
                     try {
                         const event = JSON.parse(line.slice(6));
-                        handleMetadataStreamEvent(event, stepsEl, thinkingEl, finalResultEl);
+                        handleMetadataStreamEvent(event, processBoardEl, finalResultEl);
                     } catch (e) {
                         console.error('解析事件失败:', e);
                     }
@@ -476,27 +1207,92 @@ async function generateMetadata() {
         
     } catch (error) {
         showToast('生成失败: ' + error.message, 'error');
-        thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${error.message}</div>`;
+        appendSQLProcessLine(
+            processBoardEl,
+            'fatal-error',
+            '执行错误',
+            `❌ ${escapeHtml(error.message)}`,
+            'error'
+        );
     }
+}
+
+const metadataProcessState = {
+    currentIterationKey: null,
+    currentStepKey: null,
+    usageTotal: null,
+    usageRounds: []
+};
+
+function resetMetadataProcessState() {
+    metadataProcessState.currentIterationKey = null;
+    metadataProcessState.currentStepKey = null;
+    metadataProcessState.usageTotal = null;
+    metadataProcessState.usageRounds = [];
+}
+
+function upsertGenericUsageRound(processState, iteration, usage) {
+    const item = {
+        iteration: Number(iteration || (processState.usageRounds.length + 1)),
+        input_tokens: Number(usage.input_tokens || 0),
+        output_tokens: Number(usage.output_tokens || 0),
+        total_tokens: Number(usage.total_tokens || ((usage.input_tokens || 0) + (usage.output_tokens || 0))),
+        time: Number(usage.time || 0)
+    };
+    const idx = processState.usageRounds.findIndex((x) => x.iteration === item.iteration);
+    if (idx >= 0) processState.usageRounds[idx] = item;
+    else {
+        processState.usageRounds.push(item);
+        processState.usageRounds.sort((a, b) => a.iteration - b.iteration);
+    }
+}
+
+function renderGenericUsageHtml(processState) {
+    const rounds = processState.usageRounds || [];
+    const total = processState.usageTotal;
+    if (rounds.length === 0 && !total) return '<p><strong>Token统计：</strong>暂无</p>';
+
+    const rows = rounds.map((r) =>
+        `<li>第${escapeHtml(String(r.iteration))}轮：in ${escapeHtml(String(r.input_tokens))} / out ${escapeHtml(String(r.output_tokens))} / total ${escapeHtml(String(r.total_tokens))}${r.time ? ` / ${escapeHtml(r.time.toFixed(2))}s` : ''}</li>`
+    ).join('');
+    const totalLine = total
+        ? `<p><strong>累计：</strong>in ${escapeHtml(String(total.input_tokens || 0))} / out ${escapeHtml(String(total.output_tokens || 0))} / total ${escapeHtml(String(total.total_tokens || 0))}${total.time ? ` / ${escapeHtml(Number(total.time).toFixed(2))}s` : ''}</p>`
+        : '';
+
+    return `
+        <div class="result-section">
+            <h5>Token 消耗</h5>
+            <ul>${rows || '<li>暂无</li>'}</ul>
+            ${totalLine}
+        </div>
+    `;
 }
 
 /**
  * 处理元数据流式事件
  */
-function handleMetadataStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
+function handleMetadataStreamEvent(event, processBoardEl, finalResultEl) {
     switch (event.type) {
         case 'start':
-            thinkingEl.innerHTML += `<div class="thinking-item">🚀 ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '初始化',
+                `<span class="line-tag">🚀 启动</span> ${escapeHtml(event.message || '')}`,
+                'start'
+            );
             break;
         
         case 'iteration_start':
-            // 迭代开始 - 显示迭代分隔
-            thinkingEl.innerHTML += `
-                <div class="iteration-header">
-                    <span class="iteration-badge">迭代 ${event.iteration}</span>
-                    <span class="iteration-desc">${event.message}</span>
-                </div>
-            `;
+            metadataProcessState.currentIterationKey = `meta-iter-${event.iteration || 'x'}`;
+            metadataProcessState.currentStepKey = metadataProcessState.currentIterationKey;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentIterationKey,
+                `第 ${event.iteration || '?'} 轮推理`,
+                `<span class="line-tag">🔁 轮次</span> ${escapeHtml(event.message || '')}`,
+                'iteration'
+            );
             break;
         
         case 'missing_analysis':
@@ -509,23 +1305,37 @@ function handleMetadataStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
             const missingColList = missingColCount > 0 ? 
                 `<div class="missing-columns">缺失字段: ${event.missing_columns.slice(0, 10).join(', ')}${missingColCount > 10 ? '...' : ''}</div>` : '';
             
-            thinkingEl.innerHTML += `
-                <div class="missing-analysis">
-                    <div class="missing-title">📋 元数据缺失分析</div>
-                    <div class="missing-badges">${missingTableBadge}${missingColBadge}</div>
-                    ${missingColList}
-                </div>
-            `;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentIterationKey || 'overview',
+                '元数据缺失分析',
+                `
+                <div>${missingTableBadge}${missingColBadge}</div>
+                <div>${missingColList || ''}</div>
+                `,
+                'step'
+            );
             break;
         
         case 'skill_start':
-            // Skill调用开始 - 显示分组标签
-            addSkillLabel(stepsEl, event.skill_name, event.description || '');
-            thinkingEl.innerHTML += `<div class="thinking-item">🔧 正在使用技能: ${event.skill_name}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentIterationKey || 'overview',
+                '技能调用',
+                `<span class="line-tag">🧩 技能</span> ${escapeHtml(event.skill_name || '')}`,
+                'skill'
+            );
             break;
             
         case 'step':
-            updateStepStatus(stepsEl, event);
+            metadataProcessState.currentStepKey = `meta-step-${event.step || 'x'}`;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentStepKey,
+                escapeHtml(event.title || '步骤'),
+                `<span class="line-tag">📌 ${escapeHtml(event.status || 'running')}</span> ${escapeHtml(event.message || '')}`,
+                'step'
+            );
             break;
             
         case 'tool_result':
@@ -535,34 +1345,49 @@ function handleMetadataStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
             const inputParams = event.input ? 
                 `<div class="tool-input"><strong>入参:</strong> <code>${escapeHtml(JSON.stringify(event.input))}</code></div>` : '';
             
-            thinkingEl.innerHTML += `
-                <div class="tool-result ${event.is_skill_tool ? 'skill-tool' : ''}">
-                    <div class="tool-name">📦 工具调用: ${event.tool} ${skillBadge}</div>
-                    ${inputParams}
-                    <div class="tool-output-label"><strong>出参:</strong></div>
-                    <pre class="tool-output">${escapeHtml(event.result)}</pre>
-                </div>
-            `;
-            // 自动滚动到底部
-            thinkingEl.scrollTop = thinkingEl.scrollHeight;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentStepKey || metadataProcessState.currentIterationKey || 'overview',
+                `工具执行: ${escapeHtml(event.tool || '')}`,
+                `
+                <div>${skillBadge}</div>
+                ${inputParams}
+                <pre class="sql-step-pre">${escapeHtml(event.result || '')}</pre>
+                `,
+                'tool'
+            );
             break;
             
         case 'thinking':
-            thinkingEl.innerHTML += `<div class="thinking-item">💭 ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentStepKey || metadataProcessState.currentIterationKey || 'overview',
+                '模型思考',
+                `<span class="line-tag">💭 思考</span> ${escapeHtml(event.message || '')}`,
+                'thinking'
+            );
             break;
             
         case 'llm_response':
-            thinkingEl.innerHTML += `
-                <div class="llm-response">
-                    <div class="llm-label">🤖 大模型响应:</div>
-                    <pre class="llm-output">${escapeHtml(event.content)}</pre>
-                </div>
-            `;
-            thinkingEl.scrollTop = thinkingEl.scrollHeight;
+            appendSQLProcessLine(
+                processBoardEl,
+                metadataProcessState.currentStepKey || metadataProcessState.currentIterationKey || 'overview',
+                '模型响应',
+                `<pre class="sql-step-pre">${escapeHtml(event.content || '')}</pre>`,
+                'llm'
+            );
+            break;
+
+        case 'usage':
+            metadataProcessState.usageTotal = event.usage_total || event.usage || null;
+            upsertGenericUsageRound(metadataProcessState, event.iteration, event.usage || {});
             break;
             
         case 'result':
             state.generatedMetadata = event.data;
+            if (event.data && event.data.usage) {
+                metadataProcessState.usageTotal = event.data.usage;
+            }
             finalResultEl.style.display = 'block';
             
             if (event.data.parse_error) {
@@ -585,17 +1410,30 @@ function handleMetadataStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
                             ).join('')}
                         </ul>
                     </div>
+                    ${renderGenericUsageHtml(metadataProcessState)}
                 `;
                 document.getElementById('metadata-actions').style.display = 'flex';
             }
             break;
             
         case 'error':
-            thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'fatal-error',
+                '执行错误',
+                `❌ ${escapeHtml(event.message || '')}`,
+                'error'
+            );
             break;
             
         case 'end':
-            thinkingEl.innerHTML += `<div class="thinking-item">✨ ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '流程结束',
+                `<span class="line-tag">🏁</span> ${escapeHtml(event.message || '')}`,
+                'end'
+            );
             break;
     }
 }
@@ -654,11 +1492,138 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function renderMarkdownToHtml(markdownText) {
+    const source = String(markdownText || '').replace(/\r\n/g, '\n');
+    const codeBlocks = [];
+
+    const withPlaceholders = source.replace(/```[\w-]*\n([\s\S]*?)```/g, (_, code) => {
+        const index = codeBlocks.push(
+            `<pre class="sql-explain-code"><code>${escapeHtml(code)}</code></pre>`
+        ) - 1;
+        return `@@CODE_BLOCK_${index}@@`;
+    });
+
+    const lines = withPlaceholders.split('\n');
+    let html = '';
+    let i = 0;
+    let inUl = false;
+    let inOl = false;
+
+    const closeLists = () => {
+        if (inUl) {
+            html += '</ul>';
+            inUl = false;
+        }
+        if (inOl) {
+            html += '</ol>';
+            inOl = false;
+        }
+    };
+
+    const renderTable = (tableLines) => {
+        if (tableLines.length < 2) return `<p>${escapeHtml(tableLines.join('\n'))}</p>`;
+        const separator = tableLines[1];
+        if (!/^\|\s*[-:| ]+\s*\|$/.test(separator)) return `<p>${escapeHtml(tableLines.join('\n'))}</p>`;
+
+        const parseRow = (line) => line.split('|').slice(1, -1).map((cell) => cell.trim());
+        const headerCells = parseRow(tableLines[0]);
+        const bodyRows = tableLines.slice(2).map(parseRow);
+
+        let tableHtml = '<table class="sql-explain-table"><thead><tr>';
+        tableHtml += headerCells.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('');
+        tableHtml += '</tr></thead><tbody>';
+        tableHtml += bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
+        tableHtml += '</tbody></table>';
+        return tableHtml;
+    };
+
+    while (i < lines.length) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+            closeLists();
+            i += 1;
+            continue;
+        }
+
+        if (/^@@CODE_BLOCK_\d+@@$/.test(trimmed)) {
+            closeLists();
+            html += `<div class="sql-explain-block">${trimmed}</div>`;
+            i += 1;
+            continue;
+        }
+
+        const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+        if (headingMatch) {
+            closeLists();
+            const level = headingMatch[1].length;
+            html += `<h${level}>${escapeHtml(headingMatch[2])}</h${level}>`;
+            i += 1;
+            continue;
+        }
+
+        if (/^(-{3,}|\*{3,})$/.test(trimmed)) {
+            closeLists();
+            html += '<hr />';
+            i += 1;
+            continue;
+        }
+
+        const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        if (ulMatch) {
+            if (!inUl) {
+                closeLists();
+                html += '<ul>';
+                inUl = true;
+            }
+            html += `<li>${escapeHtml(ulMatch[1])}</li>`;
+            i += 1;
+            continue;
+        }
+
+        const olMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+        if (olMatch) {
+            if (!inOl) {
+                closeLists();
+                html += '<ol>';
+                inOl = true;
+            }
+            html += `<li>${escapeHtml(olMatch[1])}</li>`;
+            i += 1;
+            continue;
+        }
+
+        if (/^\|.*\|$/.test(trimmed)) {
+            closeLists();
+            const tableLines = [];
+            while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
+                tableLines.push(lines[i].trim());
+                i += 1;
+            }
+            html += renderTable(tableLines);
+            continue;
+        }
+
+        closeLists();
+        html += `<p>${escapeHtml(trimmed)}</p>`;
+        i += 1;
+    }
+
+    closeLists();
+
+    return html.replace(/@@CODE_BLOCK_(\d+)@@/g, (_, index) => codeBlocks[Number(index)] || '');
+}
+
 /**
  * 应用元数据到数据库
  */
 async function applyMetadata() {
     if (!state.generatedMetadata) return;
+    if (!hasPermission('tables.write')) {
+        showToast('当前账号没有应用元数据权限', 'error');
+        return;
+    }
     
     showLoading('正在应用元数据...');
     
@@ -720,24 +1685,29 @@ async function generateSQL() {
     resultEl.innerHTML = `
         <div class="thinking-process" id="sql-thinking">
             <h4>🤖 AI 执行过程</h4>
-            <div class="steps-container" id="sql-steps"></div>
-            <div class="thinking-content" id="sql-thinking-content"></div>
+            <div class="sql-step-board" id="sql-step-board"></div>
         </div>
         <div class="final-result" id="sql-final-result" style="display:none;"></div>
     `;
     document.getElementById('sql-actions').style.display = 'none';
     document.getElementById('sql-execution-result').style.display = 'none';
     
-    const stepsEl = document.getElementById('sql-steps');
-    const thinkingEl = document.getElementById('sql-thinking-content');
+    const processBoardEl = document.getElementById('sql-step-board');
     const finalResultEl = document.getElementById('sql-final-result');
+    resetSQLProcessState();
     
     try {
         // 使用 SSE 流式请求
-        const response = await fetch('/api/agent/sql/generate/stream', {
+        const inference = getSQLInferenceOptions();
+        const response = await fetch(buildDataSourceScopedUrl('/api/agent/sql/generate/stream'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ requirement, context: context || null })
+            body: JSON.stringify({
+                requirement,
+                context: context || null,
+                enable_thinking: inference.enable_thinking,
+                temperature: inference.temperature
+            })
         });
         
         const reader = response.body.getReader();
@@ -756,7 +1726,7 @@ async function generateSQL() {
                 if (line.startsWith('data: ')) {
                     try {
                         const event = JSON.parse(line.slice(6));
-                        handleSQLStreamEvent(event, stepsEl, thinkingEl, finalResultEl);
+                        handleSQLStreamEvent(event, processBoardEl, finalResultEl);
                     } catch (e) {
                         console.error('解析事件失败:', e);
                     }
@@ -768,76 +1738,363 @@ async function generateSQL() {
         
     } catch (error) {
         showToast('生成失败: ' + error.message, 'error');
-        thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${error.message}</div>`;
+        appendSQLProcessLine(
+            processBoardEl,
+            'fatal-error',
+            '执行错误',
+            `❌ ${escapeHtml(error.message)}`,
+            'error'
+        );
     }
+}
+
+const sqlProcessState = {
+    currentIterationKey: null,
+    currentStepKey: null,
+    usageTotal: null,
+    usageRounds: [],
+    renderedParsedBlocks: new Set()
+};
+
+function resetSQLProcessState() {
+    sqlProcessState.currentIterationKey = null;
+    sqlProcessState.currentStepKey = null;
+    sqlProcessState.usageTotal = null;
+    sqlProcessState.usageRounds = [];
+    sqlProcessState.renderedParsedBlocks = new Set();
+    renderSQLTokenStatsPanel();
+}
+
+function getNowTimeText() {
+    return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function normalizeText(value) {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string') return value;
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch (e) {
+        return String(value);
+    }
+}
+
+function truncateText(value, maxLength = 900) {
+    const text = normalizeText(value);
+    if (text.length <= maxLength) return text;
+    return text.slice(0, maxLength) + '\n...（已截断）';
+}
+
+function renderCollapsiblePre(label, value, options = {}) {
+    const text = normalizeText(value);
+    const previewLength = Number(options.previewLength || 220);
+    const open = Boolean(options.open);
+    if (!text) return '';
+
+    const preview = text.length > previewLength ? `${text.slice(0, previewLength)}...` : text;
+    return `
+        <details class="sql-step-details"${open ? ' open' : ''}>
+            <summary>${escapeHtml(label)}${text.length > previewLength ? `：${escapeHtml(preview)}` : ''}</summary>
+            <pre class="sql-step-pre">${escapeHtml(text)}</pre>
+        </details>
+    `;
+}
+
+function ensureSQLProcessCard(container, cardKey, title, type = 'default') {
+    if (!container) return null;
+    const escapedKey = cardKey.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const domId = `sql-process-card-${escapedKey}`;
+    let card = document.getElementById(domId);
+
+    if (!card) {
+        card = document.createElement('section');
+        card.id = domId;
+        card.className = `sql-step-card sql-step-${type}`;
+        card.innerHTML = `
+            <div class="sql-step-header">
+                <div class="sql-step-title">${escapeHtml(title)}</div>
+                <div class="sql-step-meta">
+                    <span class="sql-step-status">进行中</span>
+                    <span class="sql-step-time">${getNowTimeText()}</span>
+                </div>
+            </div>
+            <div class="sql-step-stream"></div>
+        `;
+        container.appendChild(card);
+    } else if (type !== 'default') {
+        card.classList.add(`sql-step-${type}`);
+    }
+
+    return card;
+}
+
+function updateSQLProcessCardStatus(card, statusText, statusType) {
+    if (!card) return;
+    const statusEl = card.querySelector('.sql-step-status');
+    const timeEl = card.querySelector('.sql-step-time');
+    if (statusEl) statusEl.textContent = statusText;
+    if (timeEl) timeEl.textContent = getNowTimeText();
+
+    card.classList.remove('is-done', 'is-error', 'is-running');
+    if (statusType === 'done') card.classList.add('is-done');
+    else if (statusType === 'error') card.classList.add('is-error');
+    else card.classList.add('is-running');
+}
+
+function appendSQLProcessLine(container, cardKey, title, htmlLine, cardType = 'default') {
+    const card = ensureSQLProcessCard(container, cardKey, title, cardType);
+    if (!card) return;
+    const streamEl = card.querySelector('.sql-step-stream');
+    if (!streamEl) return;
+
+    const line = document.createElement('div');
+    line.className = 'sql-step-line';
+    line.innerHTML = htmlLine;
+    streamEl.appendChild(line);
+
+    updateSQLProcessCardStatus(card, '进行中', 'running');
+    container.scrollTop = container.scrollHeight;
+}
+
+function formatUsageSummary(usage) {
+    if (!usage) return 'Token统计：暂无';
+    const input = Number(usage.input_tokens || 0);
+    const output = Number(usage.output_tokens || 0);
+    const total = Number(usage.total_tokens || (input + output));
+    const time = Number(usage.time || 0);
+    return `Token统计：输入 ${input} / 输出 ${output} / 总计 ${total}${time ? ` / 耗时 ${time.toFixed(2)}s` : ''}`;
+}
+
+function upsertSQLUsageRound(iteration, usage) {
+    const item = {
+        iteration: Number(iteration || (sqlProcessState.usageRounds.length + 1)),
+        input_tokens: Number(usage.input_tokens || 0),
+        output_tokens: Number(usage.output_tokens || 0),
+        total_tokens: Number(usage.total_tokens || ((usage.input_tokens || 0) + (usage.output_tokens || 0))),
+        time: Number(usage.time || 0)
+    };
+
+    const idx = sqlProcessState.usageRounds.findIndex((x) => x.iteration === item.iteration);
+    if (idx >= 0) {
+        sqlProcessState.usageRounds[idx] = item;
+    } else {
+        sqlProcessState.usageRounds.push(item);
+        sqlProcessState.usageRounds.sort((a, b) => a.iteration - b.iteration);
+    }
+}
+
+function renderSQLTokenStatsPanel() {
+    const panelEl = document.getElementById('sql-token-stats');
+    if (!panelEl) return;
+
+    const rounds = sqlProcessState.usageRounds || [];
+    const total = sqlProcessState.usageTotal;
+
+    if (rounds.length === 0 && !total) {
+        panelEl.innerHTML = '<div class="sql-token-empty">暂无数据</div>';
+        return;
+    }
+
+    let html = '';
+    if (rounds.length > 0) {
+        html += rounds.map((r) => `
+            <div class="sql-token-row">
+                <span class="label">第${escapeHtml(String(r.iteration))}轮</span>
+                <span class="value">in ${escapeHtml(String(r.input_tokens))} / out ${escapeHtml(String(r.output_tokens))} / total ${escapeHtml(String(r.total_tokens))}${r.time ? ` / ${escapeHtml(r.time.toFixed(2))}s` : ''}</span>
+            </div>
+        `).join('');
+    }
+
+    if (total) {
+        html += `
+            <div class="sql-token-total">
+                累计：in ${escapeHtml(String(total.input_tokens || 0))} / out ${escapeHtml(String(total.output_tokens || 0))} / total ${escapeHtml(String(total.total_tokens || 0))}${total.time ? ` / ${escapeHtml(Number(total.time).toFixed(2))}s` : ''}
+            </div>
+        `;
+    }
+
+    panelEl.innerHTML = html;
+}
+
+function getCurrentSQLIterationCardKey() {
+    return sqlProcessState.currentIterationKey || 'overview';
 }
 
 /**
  * 处理SQL流式事件
  */
-function handleSQLStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
+function handleSQLStreamEvent(event, processBoardEl, finalResultEl) {
     switch (event.type) {
         case 'start':
-            thinkingEl.innerHTML += `<div class="thinking-item">🚀 ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '步骤 1: 请求初始化',
+                `<span class="line-tag">🚀 启动</span> ${escapeHtml(event.message || '')}`,
+                'start'
+            );
             break;
         
         case 'iteration_start':
-            // 迭代开始 - 显示迭代分隔
-            thinkingEl.innerHTML += `
-                <div class="iteration-header">
-                    <span class="iteration-badge">迭代 ${event.iteration}</span>
-                    <span class="iteration-desc">${event.message}</span>
-                </div>
-            `;
+            sqlProcessState.currentIterationKey = `iteration-${event.iteration || 'x'}`;
+            sqlProcessState.currentStepKey = sqlProcessState.currentIterationKey;
+            appendSQLProcessLine(
+                processBoardEl,
+                sqlProcessState.currentIterationKey,
+                `步骤 2: 第 ${event.iteration || '?'} 轮推理`,
+                `<span class="line-tag">🔁 轮次</span> ${escapeHtml(event.message || '开始新一轮推理')}`,
+                'iteration'
+            );
             break;
+
+        case 'model_request':
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">📤 模型请求</span> 本轮实际下发给模型的请求体</div>
+                ${renderCollapsiblePre('查看本轮完整请求体', event.payload, { previewLength: 240, open: true })}
+                `,
+                'iteration'
+            );
+            break;
+
+        case 'parsed_model_blocks': {
+            const cardKey = getCurrentSQLIterationCardKey();
+            sqlProcessState.renderedParsedBlocks.add(cardKey);
+            const blocks = Array.isArray(event.blocks) ? event.blocks : [];
+            appendSQLProcessLine(
+                processBoardEl,
+                cardKey,
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">🧩 解析块</span> 按 thinking / text / tool_use 顺序展示</div>
+                ${blocks.map((block, index) => `
+                    <div class="sql-block-item">
+                        <div><span class="line-tag">Block ${index + 1}</span> ${escapeHtml(String(block?.type || 'unknown'))}</div>
+                        ${renderCollapsiblePre(`查看 ${String(block?.type || 'unknown')} 完整内容`, block, { previewLength: 220, open: index === 0 })}
+                    </div>
+                `).join('')}
+                `,
+                'iteration'
+            );
+            break;
+        }
         
         case 'skill_start':
-            // Skill调用开始 - 显示分组标签
-            addSkillLabel(stepsEl, event.skill_name, event.description || '');
-            thinkingEl.innerHTML += `<div class="thinking-item">🔧 正在使用技能: ${event.skill_name}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                sqlProcessState.currentIterationKey || 'overview',
+                '步骤 2: 轮次推理',
+                `<span class="line-tag">🧩 技能</span> ${escapeHtml(event.skill_name || '未命名技能')}`,
+                'iteration'
+            );
             break;
             
         case 'step':
-            updateStepStatus(stepsEl, event);
+            sqlProcessState.currentStepKey = getCurrentSQLIterationCardKey();
+            appendSQLProcessLine(
+                processBoardEl,
+                sqlProcessState.currentStepKey,
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">📌 步骤</span> ${escapeHtml(event.title || '步骤更新')}</div>
+                <div><span class="line-tag">📌 状态</span> ${escapeHtml(event.status || 'running')}</div>
+                <div>${escapeHtml(event.message || '')}</div>
+                `,
+                'step'
+            );
+            updateSQLProcessCardStatus(
+                ensureSQLProcessCard(processBoardEl, sqlProcessState.currentStepKey, `步骤 2: 第 ${event.iteration || '?'} 轮推理`, 'iteration'),
+                event.status === 'done' ? '已完成' : '进行中',
+                event.status === 'done' ? 'done' : 'running'
+            );
             break;
             
         case 'tool_result':
-            // 显示工具调用详情，包含入参和出参
-            const sqlSkillBadge = event.is_skill_tool ? 
-                `<span class="skill-badge">Skill: ${event.skill_name || 'Database Schema Analysis'}</span>` : '';
-            const sqlInputParams = event.input ? 
-                `<div class="tool-input"><strong>入参:</strong> <code>${escapeHtml(JSON.stringify(event.input))}</code></div>` : '';
-            
-            thinkingEl.innerHTML += `
-                <div class="tool-result ${event.is_skill_tool ? 'skill-tool' : ''}">
-                    <div class="tool-name">📦 工具调用: ${event.tool} ${sqlSkillBadge}</div>
-                    ${sqlInputParams}
-                    <div class="tool-output-label"><strong>出参:</strong></div>
-                    <pre class="tool-output">${escapeHtml(event.result)}</pre>
-                </div>
-            `;
-            thinkingEl.scrollTop = thinkingEl.scrollHeight;
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">🛠️ 工具</span> ${escapeHtml(event.tool || 'unknown')}</div>
+                ${renderCollapsiblePre('查看完整入参', event.input, { previewLength: 180 })}
+                ${renderCollapsiblePre('查看完整出参', event.result, { previewLength: 260 })}
+                `,
+                'iteration'
+            );
             break;
             
         case 'thinking':
-            thinkingEl.innerHTML += `<div class="thinking-item">💭 ${event.message}</div>`;
+            if (sqlProcessState.renderedParsedBlocks.has(getCurrentSQLIterationCardKey())) {
+                break;
+            }
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">💭 思考</span></div>
+                ${renderCollapsiblePre('查看完整思考', event.message || '', { previewLength: 280, open: true })}
+                `,
+                'iteration'
+            );
             break;
             
         case 'llm_response':
-            thinkingEl.innerHTML += `
-                <div class="llm-response">
-                    <div class="llm-label">🤖 大模型响应:</div>
-                    <pre class="llm-output">${escapeHtml(event.content)}</pre>
-                </div>
-            `;
-            thinkingEl.scrollTop = thinkingEl.scrollHeight;
+            if (sqlProcessState.renderedParsedBlocks.has(getCurrentSQLIterationCardKey())) {
+                break;
+            }
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">🤖 回包</span></div>
+                ${renderCollapsiblePre('查看完整模型回包', event.content, { previewLength: 280, open: true })}
+                `,
+                'iteration'
+            );
+            break;
+
+        case 'raw_model_response':
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">🧪 原始回包</span></div>
+                ${renderCollapsiblePre('查看原始模型返回', event.payload, { previewLength: 220 })}
+                `,
+                'iteration'
+            );
             break;
             
         case 'result':
             state.generatedSQL = event.data;
+            if (event.data && event.data.usage) {
+                sqlProcessState.usageTotal = event.data.usage;
+            }
+            renderSQLTokenStatsPanel();
             finalResultEl.style.display = 'block';
+            appendSQLProcessLine(
+                processBoardEl,
+                'final-result',
+                '步骤 3: 结果汇总',
+                event.data && event.data.sql
+                    ? '<span class="line-tag">✅ 完成</span> 已产出最终 SQL'
+                    : '<span class="line-tag">⚠️ 完成</span> 未解析到可用 SQL，请检查上方步骤',
+                'result'
+            );
+            updateSQLProcessCardStatus(
+                ensureSQLProcessCard(processBoardEl, 'final-result', '步骤 3: 结果汇总', 'result'),
+                '已完成',
+                'done'
+            );
             
             if (event.data.sql) {
+                const usage = event.data.usage || sqlProcessState.usageTotal;
                 finalResultEl.innerHTML = `
                     <h4>✅ 生成的SQL</h4>
                     <div class="sql-code">
@@ -846,6 +2103,7 @@ function handleSQLStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
                     <div class="explanation">
                         <h5>说明</h5>
                         <p>${event.data.explanation || '无'}</p>
+                        <p><strong>${escapeHtml(formatUsageSummary(usage))}</strong></p>
                         ${event.data.tables_used && event.data.tables_used.length > 0 ? 
                             `<p><strong>涉及的表：</strong>${event.data.tables_used.join(', ')}</p>` : ''}
                         ${event.data.key_points && event.data.key_points.length > 0 ?
@@ -860,13 +2118,50 @@ function handleSQLStreamEvent(event, stepsEl, thinkingEl, finalResultEl) {
                 `;
             }
             break;
+
+        case 'usage': {
+            const usage = event.usage || {};
+            const usageTotal = event.usage_total || usage;
+            sqlProcessState.usageTotal = usageTotal;
+            upsertSQLUsageRound(event.iteration, usage);
+            renderSQLTokenStatsPanel();
+            break;
+        }
             
         case 'error':
-            thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                getCurrentSQLIterationCardKey(),
+                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
+                `
+                <div><span class="line-tag">❌ 错误</span> ${escapeHtml(event.message || '')}</div>
+                ${event.tool ? `<div><span class="line-tag">🛠️ 工具</span> ${escapeHtml(event.tool)}</div>` : ''}
+                ${event.tool_input ? renderCollapsiblePre('查看完整工具入参', event.tool_input, { previewLength: 200 }) : ''}
+                ${event.context ? renderCollapsiblePre('查看完整上下文', event.context, { previewLength: 220 }) : ''}
+                ${event.detail ? renderCollapsiblePre('查看完整异常详情', event.detail, { previewLength: 260, open: true }) : ''}
+                `,
+                'iteration'
+            );
+            updateSQLProcessCardStatus(
+                ensureSQLProcessCard(processBoardEl, getCurrentSQLIterationCardKey(), `步骤 2: 第 ${event.iteration || '?'} 轮推理`, 'iteration'),
+                '失败',
+                'error'
+            );
             break;
             
         case 'end':
-            thinkingEl.innerHTML += `<div class="thinking-item">✨ ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '步骤 1: 请求初始化',
+                `<span class="line-tag">🏁 结束</span> ${escapeHtml(event.message || '')}`,
+                'end'
+            );
+            updateSQLProcessCardStatus(
+                ensureSQLProcessCard(processBoardEl, 'overview', '步骤 1: 请求初始化', 'start'),
+                '已完成',
+                'done'
+            );
             break;
     }
 }
@@ -880,7 +2175,7 @@ async function executeSQL() {
     showLoading('正在执行SQL...');
     
     try {
-        const result = await fetchAPI('/api/sql/execute', {
+        const result = await fetchAPI(buildDataSourceScopedUrl('/api/sql/execute'), {
             method: 'POST',
             body: JSON.stringify({ sql: state.generatedSQL.sql })
         });
@@ -928,25 +2223,101 @@ function copySQL() {
  */
 async function explainSQL() {
     if (!state.generatedSQL || !state.generatedSQL.sql) return;
-    
-    showLoading('AI正在分析SQL...');
-    
+
+    showModal('SQL解释（流式）', `
+        <div id="sql-explain-stream-content" class="sql-explain-stream-content">
+            正在建立连接...
+        </div>
+    `);
+    document.getElementById('modal').classList.add('modal-explain');
+
+    const streamContentEl = document.getElementById('sql-explain-stream-content');
+    if (!streamContentEl) {
+        showToast('解释窗口渲染失败，请重试', 'error');
+        return;
+    }
+
+    const renderFinalExplanation = (explanation) => {
+        streamContentEl.innerHTML = `
+            <div class="sql-explain-title">解释完成：</div>
+            <div class="sql-explain-rich">${renderMarkdownToHtml(explanation || '未返回解释内容')}</div>
+        `;
+    };
+
+    const renderLine = (text) => {
+        streamContentEl.innerHTML += `<div>${escapeHtml(text)}</div>`;
+        streamContentEl.scrollTop = streamContentEl.scrollHeight;
+    };
+
+    streamContentEl.innerHTML = '';
+    renderLine('开始请求解释...');
+
     try {
-        const result = await fetchAPI('/api/agent/sql/explain', {
+        const response = await fetch('/api/agent/sql/explain/stream', {
             method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sql: state.generatedSQL.sql })
         });
-        
-        showModal('SQL解释', `
-            <div style="white-space: pre-wrap; font-size: 14px; line-height: 1.8;">
-                ${result.explanation}
-            </div>
-        `);
-        
+
+        if (!response.ok) {
+            const errText = await response.text().catch(() => '');
+            throw new Error(errText || `HTTP ${response.status}`);
+        }
+
+        // 浏览器或代理不支持流式时，降级到非流式接口
+        if (!response.body || typeof response.body.getReader !== 'function') {
+            const fallback = await fetchAPI('/api/agent/sql/explain', {
+                method: 'POST',
+                body: JSON.stringify({ sql: state.generatedSQL.sql })
+            });
+            renderFinalExplanation(fallback.explanation || '未返回解释内容');
+            return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let receivedResult = false;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const event = JSON.parse(line.slice(6));
+
+                if (event.type === 'start') {
+                    renderLine(event.message || '开始解释...');
+                } else if (event.type === 'thinking') {
+                    renderLine(event.message || '分析中...');
+                } else if (event.type === 'result') {
+                    const explanation = event.data && event.data.explanation ? event.data.explanation : '未返回解释内容';
+                    renderFinalExplanation(explanation);
+                    receivedResult = true;
+                } else if (event.type === 'error') {
+                    renderLine(`❌ ${event.message || '解释失败'}`);
+                } else if (event.type === 'end') {
+                    renderLine(event.message || '结束');
+                }
+            }
+        }
+
+        // 兜底：若流式未返回result事件，则走一次非流式解释
+        if (!receivedResult) {
+            const fallback = await fetchAPI('/api/agent/sql/explain', {
+                method: 'POST',
+                body: JSON.stringify({ sql: state.generatedSQL.sql })
+            });
+            renderFinalExplanation(fallback.explanation || '未返回解释内容');
+        }
     } catch (error) {
+        renderLine(`❌ 解释失败: ${error.message}`);
         showToast('解释失败: ' + error.message, 'error');
-    } finally {
-        hideLoading();
     }
 }
 
@@ -972,7 +2343,7 @@ const erState = {
  */
 async function loadERDiagram() {
     try {
-        const data = await fetchAPI('/api/database/er-diagram');
+        const data = await fetchAPI(buildDataSourceScopedUrl('/api/database/er-diagram'));
         erState.nodes = data.nodes;
         erState.edges = data.edges;
         
@@ -1525,16 +2896,15 @@ async function generateTags() {
     resultEl.innerHTML = `
         <div class="thinking-process" id="tagging-thinking">
             <h4>🏷️ AI 标签生成过程</h4>
-            <div class="steps-container" id="tagging-steps"></div>
-            <div class="thinking-content" id="tagging-thinking-content"></div>
+            <div class="sql-step-board" id="tagging-step-board"></div>
         </div>
         <div class="final-result" id="tagging-final-result" style="display:none;"></div>
     `;
     document.getElementById('tagging-actions').style.display = 'none';
     
-    const stepsEl = document.getElementById('tagging-steps');
-    const thinkingEl = document.getElementById('tagging-thinking-content');
+    const processBoardEl = document.getElementById('tagging-step-board');
     const finalResultEl = document.getElementById('tagging-final-result');
+    resetTaggingProcessState();
     
     try {
         // 使用 SSE 流式请求
@@ -1560,7 +2930,7 @@ async function generateTags() {
                 if (line.startsWith('data: ')) {
                     try {
                         const event = JSON.parse(line.slice(6));
-                        handleTaggingStreamEvent(event, stepsEl, thinkingEl, finalResultEl, tableName);
+                        handleTaggingStreamEvent(event, processBoardEl, finalResultEl, tableName);
                     } catch (e) {
                         console.error('解析事件失败:', e);
                     }
@@ -1572,39 +2942,98 @@ async function generateTags() {
         
     } catch (error) {
         showToast('生成失败: ' + error.message, 'error');
-        thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${error.message}</div>`;
+        appendSQLProcessLine(
+            processBoardEl,
+            'fatal-error',
+            '执行错误',
+            `❌ ${escapeHtml(error.message)}`,
+            'error'
+        );
     }
+}
+
+const taggingProcessState = {
+    currentIterationKey: null,
+    currentStepKey: null,
+    usageTotal: null,
+    usageRounds: []
+};
+
+function resetTaggingProcessState() {
+    taggingProcessState.currentIterationKey = null;
+    taggingProcessState.currentStepKey = null;
+    taggingProcessState.usageTotal = null;
+    taggingProcessState.usageRounds = [];
 }
 
 /**
  * 处理标签生成流式事件
  */
-function handleTaggingStreamEvent(event, stepsEl, thinkingEl, finalResultEl, tableName) {
+function handleTaggingStreamEvent(event, processBoardEl, finalResultEl, tableName) {
     switch (event.type) {
         case 'start':
-            thinkingEl.innerHTML += `<div class="thinking-item">🚀 ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '初始化',
+                `<span class="line-tag">🚀 启动</span> ${escapeHtml(event.message || '')}`,
+                'start'
+            );
             break;
         
         case 'step':
-            updateStepStatus(stepsEl, event);
+            taggingProcessState.currentStepKey = `tag-step-${event.step || 'x'}`;
+            appendSQLProcessLine(
+                processBoardEl,
+                taggingProcessState.currentStepKey,
+                escapeHtml(event.title || '步骤'),
+                `<span class="line-tag">📌 ${escapeHtml(event.status || 'running')}</span> ${escapeHtml(event.message || '')}`,
+                'step'
+            );
             break;
             
         case 'tool_result':
-            thinkingEl.innerHTML += `
-                <div class="tool-result">
-                    <div class="tool-name">📦 工具调用: ${event.tool}</div>
-                    <pre class="tool-output">${escapeHtml(event.result.substring(0, 500))}${event.result.length > 500 ? '...' : ''}</pre>
-                </div>
-            `;
-            thinkingEl.scrollTop = thinkingEl.scrollHeight;
+            appendSQLProcessLine(
+                processBoardEl,
+                taggingProcessState.currentStepKey || taggingProcessState.currentIterationKey || 'overview',
+                `工具执行: ${escapeHtml(event.tool || '')}`,
+                `<pre class="sql-step-pre">${escapeHtml((event.result || '').substring(0, 800))}${(event.result || '').length > 800 ? '\n...（已截断）' : ''}</pre>`,
+                'tool'
+            );
             break;
             
         case 'thinking':
-            thinkingEl.innerHTML += `<div class="thinking-item">💭 ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                taggingProcessState.currentStepKey || taggingProcessState.currentIterationKey || 'overview',
+                '模型思考',
+                `<span class="line-tag">💭 思考</span> ${escapeHtml(event.message || '')}`,
+                'thinking'
+            );
+            break;
+
+        case 'iteration_start':
+            taggingProcessState.currentIterationKey = `tag-iter-${event.iteration || 'x'}`;
+            taggingProcessState.currentStepKey = taggingProcessState.currentIterationKey;
+            appendSQLProcessLine(
+                processBoardEl,
+                taggingProcessState.currentIterationKey,
+                `第 ${event.iteration || '?'} 轮推理`,
+                `<span class="line-tag">🔁 轮次</span> ${escapeHtml(event.message || '')}`,
+                'iteration'
+            );
+            break;
+
+        case 'usage':
+            taggingProcessState.usageTotal = event.usage_total || event.usage || null;
+            upsertGenericUsageRound(taggingProcessState, event.iteration, event.usage || {});
             break;
             
         case 'result':
             state.generatedTags = { ...event.data, table_name: tableName };
+            if (event.data && event.data.usage) {
+                taggingProcessState.usageTotal = event.data.usage;
+            }
             finalResultEl.style.display = 'block';
             
             const tableTags = event.data.table_tags || [];
@@ -1633,17 +3062,29 @@ function handleTaggingStreamEvent(event, stepsEl, thinkingEl, finalResultEl, tab
                 `;
             }
             
-            tagsHtml += '</div>';
+            tagsHtml += '</div>' + renderGenericUsageHtml(taggingProcessState);
             finalResultEl.innerHTML = tagsHtml;
             document.getElementById('tagging-actions').style.display = 'flex';
             break;
             
         case 'error':
-            thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'fatal-error',
+                '执行错误',
+                `❌ ${escapeHtml(event.message || '')}`,
+                'error'
+            );
             break;
             
         case 'end':
-            thinkingEl.innerHTML += `<div class="thinking-item">✨ ${event.message}</div>`;
+            appendSQLProcessLine(
+                processBoardEl,
+                'overview',
+                '流程结束',
+                `<span class="line-tag">🏁</span> ${escapeHtml(event.message || '')}`,
+                'end'
+            );
             break;
     }
 }
@@ -1697,7 +3138,7 @@ async function generateRandomSQL() {
     
     try {
         const startTime = Date.now();
-        const result = await fetchAPI('/api/agent/sql-validation/generate', {
+        const result = await fetchAPI(buildDataSourceScopedUrl('/api/agent/sql-validation/generate'), {
             method: 'POST',
             body: JSON.stringify({})
         });
@@ -1834,10 +3275,15 @@ async function validateSQL() {
     
     try {
         // 使用 SSE 流式请求
-        const response = await fetch('/api/agent/sql-validation/validate/stream', {
+        const inference = getValidationInferenceOptions();
+        const response = await fetch(buildDataSourceScopedUrl('/api/agent/sql-validation/validate/stream'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sql: sql })
+            body: JSON.stringify({
+                sql: sql,
+                enable_thinking: inference.enable_thinking,
+                temperature: inference.temperature
+            })
         });
         
         const reader = response.body.getReader();
@@ -2036,6 +3482,20 @@ function handleValidationStreamEvent(event, stepsEl, thinkingEl, finalResultEl, 
                 renderSQLDiff(originalSQL, fixedSQL);
             }
             break;
+
+        case 'usage':
+            thinkingEl.innerHTML += `
+                <div class="thinking-item">🧮 Token统计：输入 ${event.usage_total?.input_tokens || 0} / 输出 ${event.usage_total?.output_tokens || 0} / 总计 ${event.usage_total?.total_tokens || 0}</div>
+            `;
+            if (processContent) {
+                addProcessItem(
+                    processContent,
+                    'api',
+                    'Token统计',
+                    `输入 ${event.usage_total?.input_tokens || 0} / 输出 ${event.usage_total?.output_tokens || 0} / 总计 ${event.usage_total?.total_tokens || 0}`
+                );
+            }
+            break;
             
         case 'error':
             thinkingEl.innerHTML += `<div class="error-message">❌ 错误: ${event.message}</div>`;
@@ -2103,27 +3563,45 @@ function copyFixedSQL() {
 
 // ============ 事件绑定 ============
 
-document.addEventListener('DOMContentLoaded', () => {
-    // 加载初始数据
-    loadDatabaseSummary();
-    loadTableList();
-    loadMissingMetadata();
-    loadERDiagram();
-    
-    // 导航标签切换
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const tab = btn.dataset.tab;
-            
-            // 更新按钮状态
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            
-            // 切换内容区
-            document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
-            document.getElementById(tab + '-section').classList.add('active');
+document.addEventListener('DOMContentLoaded', async () => {
+    // 认证相关按钮
+    const loginBtn = document.getElementById('auth-login-btn');
+    if (loginBtn) {
+        loginBtn.addEventListener('click', login);
+    }
+    const passwordEl = document.getElementById('auth-password');
+    if (passwordEl) {
+        passwordEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') login();
         });
-    });
+    }
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
+
+    const authed = await checkAuthSession();
+    if (authed) {
+        initializeAppData();
+    }
+    
+    // 导航标签切换（事件委托，避免动态显示/隐藏导致绑定失效）
+    const navEl = document.querySelector('.nav');
+    if (navEl) {
+        navEl.addEventListener('click', (event) => {
+            const target = event.target instanceof Element ? event.target : null;
+            if (!target) return;
+            const btn = target.closest('.nav-btn[data-tab]');
+            if (!btn || btn.disabled) return;
+            switchMainTab(btn.dataset.tab);
+        });
+    }
+
+    // 确保初始化后存在可见激活页
+    const visibleTabs = getVisibleTabButtons();
+    const initialActiveTab = visibleTabs.find((btn) => btn.classList.contains('active'))?.dataset.tab;
+    const firstVisibleTab = visibleTabs[0]?.dataset.tab;
+    switchMainTab(initialActiveTab || firstVisibleTab);
     
     // 子标签切换
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2200,6 +3678,62 @@ document.addEventListener('DOMContentLoaded', () => {
     const validateSqlBtn = document.getElementById('validate-sql-btn');
     if (validateSqlBtn) {
         validateSqlBtn.addEventListener('click', validateSQL);
+    }
+
+    // 模型配置按钮
+    const loadModelConfigBtn = document.getElementById('load-model-config-btn');
+    if (loadModelConfigBtn) {
+        loadModelConfigBtn.addEventListener('click', () => loadModelConfig());
+    }
+
+    const testModelConfigBtn = document.getElementById('test-model-config-btn');
+    if (testModelConfigBtn) {
+        testModelConfigBtn.addEventListener('click', testModelConfig);
+    }
+
+    const saveModelConfigBtn = document.getElementById('save-model-config-btn');
+    if (saveModelConfigBtn) {
+        saveModelConfigBtn.addEventListener('click', saveModelConfig);
+    }
+
+    const toggleApiKeyBtn = document.getElementById('toggle-api-key-visibility');
+    if (toggleApiKeyBtn) {
+        toggleApiKeyBtn.addEventListener('click', toggleApiKeyVisibility);
+    }
+
+    const refreshDataSourcesBtn = document.getElementById('refresh-datasources-btn');
+    if (refreshDataSourcesBtn) {
+        refreshDataSourcesBtn.addEventListener('click', () => loadDataSources());
+    }
+
+    const testDataSourceBtn = document.getElementById('test-datasource-btn');
+    if (testDataSourceBtn) {
+        testDataSourceBtn.addEventListener('click', testDataSource);
+    }
+
+    const saveDataSourceBtn = document.getElementById('save-datasource-btn');
+    if (saveDataSourceBtn) {
+        saveDataSourceBtn.addEventListener('click', saveDataSource);
+    }
+
+    const dataSourceListEl = document.getElementById('datasource-list');
+    if (dataSourceListEl) {
+        dataSourceListEl.addEventListener('click', (event) => {
+            const target = event.target instanceof Element ? event.target : null;
+            if (!target) return;
+            const btn = target.closest('button[data-action][data-id]');
+            if (!btn) return;
+            const action = btn.getAttribute('data-action');
+            const id = btn.getAttribute('data-id');
+            if (!id) return;
+            if (action === 'use') {
+                switchActiveDataSource(id);
+            } else if (action === 'test') {
+                testDataSourceById(id);
+            } else if (action === 'delete') {
+                deleteDataSource(id);
+            }
+        });
     }
     
     // 示例查询链接

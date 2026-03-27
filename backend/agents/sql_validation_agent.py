@@ -15,15 +15,15 @@ import sys
 import json
 import re
 import random
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from pathlib import Path
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 from agentscope.agent import ReActAgent
-from agentscope.model import OpenAIChatModel, DashScopeChatModel
-from agentscope.formatter import OpenAIChatFormatter, DashScopeChatFormatter
+from agentscope.model import OpenAIChatModel
+from agentscope.formatter import OpenAIChatFormatter
 from agentscope.memory import InMemoryMemory
 from agentscope.tool import Toolkit, ToolResponse
 from agentscope.message import Msg, TextBlock
@@ -31,6 +31,10 @@ from agentscope.message import Msg, TextBlock
 # 导入数据库服务
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database import db_service
+
+# 导入配置
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import config
 
 
 def extract_text_from_content(content_item):
@@ -135,18 +139,32 @@ class SQLValidationAgent:
     
     def __init__(
         self,
-        api_key: str = None,
-        model_name: str = "qwen3-max",
-        model_type: str = "dashscope",
-        base_url: str = None,
+        api_key: Optional[str] = None,
+        model_name: Optional[str] = None,
+        base_url: Optional[str] = None,
+        schema_text: Optional[str] = None,
+        sql_dialect: str = "SQLite",
+        sql_executor: Optional[Callable[[str], Dict[str, Any]]] = None,
+        tables_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None,
+        table_schema_provider: Optional[Callable[[str], Dict[str, Any]]] = None,
+        enable_thinking: Optional[bool] = None,
+        temperature: Optional[float] = None,
     ):
         """
         初始化SQL纠错校验智能体
         """
-        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        self.model_name = model_name
-        self.model_type = model_type
-        self.base_url = base_url
+        from config import ModelConfig
+
+        self.api_key = api_key or ModelConfig.get_api_key()
+        self.model_name = model_name or ModelConfig.get_model_name()
+        self.base_url = base_url or ModelConfig.get_base_url()
+        self.schema_text = schema_text
+        self.sql_dialect = sql_dialect
+        self.sql_executor = sql_executor
+        self.tables_provider = tables_provider
+        self.table_schema_provider = table_schema_provider
+        self.enable_thinking = enable_thinking
+        self.temperature = temperature
         
         # 存储验证结果
         self._validation_result = None
@@ -175,22 +193,44 @@ class SQLValidationAgent:
         return toolkit
     
     def _create_model(self, stream: bool = False):
-        """创建模型实例"""
-        if self.model_type == "openai":
-            return OpenAIChatModel(
-                model_name=self.model_name,
-                api_key=self.api_key,
-                base_url=self.base_url,
+        """创建模型实例（OpenAI-compatible）"""
+        from config import ModelConfig
+
+        return OpenAIChatModel(
+            model_name=self.model_name or ModelConfig.get_model_name(),
+            api_key=self.api_key or ModelConfig.get_api_key(),
+            client_kwargs={"base_url": self.base_url or ModelConfig.get_base_url()},
+            stream=stream,
+            generate_kwargs=ModelConfig.get_generate_kwargs(
+                base_url=self.base_url or ModelConfig.get_base_url(),
+                model_name=self.model_name or ModelConfig.get_model_name(),
                 stream=stream,
-            )
-        else:
-            return DashScopeChatModel(
-                model_name=self.model_name,
-                api_key=self.api_key,
-                stream=stream,
-            )
+                enable_thinking=self.enable_thinking,
+                temperature=self.temperature,
+            ),
+        )
     
     # ============ 工具函数 ============
+
+    def _execute_sql(self, sql: str) -> Dict[str, Any]:
+        if self.sql_executor:
+            return self.sql_executor(sql)
+        return db_service.execute_sql(sql)
+
+    def _get_schema_text(self) -> str:
+        if self.schema_text is not None:
+            return self.schema_text
+        return db_service.get_schema_for_llm()
+
+    def _get_available_tables(self) -> List[Dict[str, Any]]:
+        if self.tables_provider:
+            return self.tables_provider()
+        return db_service.get_all_tables()
+
+    def _get_table_schema(self, table_name: str) -> Dict[str, Any]:
+        if self.table_schema_provider:
+            return self.table_schema_provider(table_name)
+        return db_service.get_table_schema(table_name)
     
     def get_database_schema(self) -> ToolResponse:
         """
@@ -200,7 +240,7 @@ class SQLValidationAgent:
             ToolResponse: 数据库结构描述
         """
         try:
-            schema_text = db_service.get_schema_for_llm()
+            schema_text = self._get_schema_text()
             return ToolResponse(
                 content=[TextBlock(type="text", text=schema_text)],
                 is_last=False
@@ -229,7 +269,7 @@ class SQLValidationAgent:
             
             # 使用EXPLAIN验证
             explain_sql = f"EXPLAIN {sql}"
-            result = db_service.execute_sql(explain_sql)
+            result = self._execute_sql(explain_sql)
             
             if result['success']:
                 return ToolResponse(
@@ -571,8 +611,26 @@ class SQLValidationAgent:
             "type": "result",
             "data": result
         }
+
+        # 该校验流程主要使用本地规则与工具，不走大模型推理，token记为0
+        yield {
+            "type": "usage",
+            "iteration": 1,
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "time": 0.0,
+            },
+            "usage_total": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "time": 0.0,
+            }
+        }
     
-    async def generate_test_sql(self, sql_type: str = None) -> Dict[str, Any]:
+    async def generate_test_sql(self, sql_type: Optional[str] = None) -> Dict[str, Any]:
         """
         生成测试用SQL
         
@@ -594,14 +652,14 @@ class SQLValidationAgent:
                 sql_type = "performance_issue"
         
         # 获取数据库结构
-        tables = db_service.get_all_tables()
+        tables = self._get_available_tables()
         if not tables:
             return {"sql": "SELECT 1", "type": sql_type, "error": "无可用表"}
         
         # 随机选择表
         table = random.choice(tables)
         table_name = table["table_name"]
-        schema = db_service.get_table_schema(table_name)
+        schema = self._get_table_schema(table_name)
         columns = [col["name"] for col in schema.get("columns", [])]
         
         if not columns:
@@ -682,15 +740,39 @@ class SQLValidationAgent:
 
 # 便捷函数
 def create_sql_validation_agent(
-    api_key: str = None,
-    model_name: str = "qwen3-max",
-    model_type: str = "dashscope"
+    api_key: Optional[str] = None,
+    model_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    schema_text: Optional[str] = None,
+    sql_dialect: str = "SQLite",
+    sql_executor: Optional[Callable[[str], Dict[str, Any]]] = None,
+    tables_provider: Optional[Callable[[], List[Dict[str, Any]]]] = None,
+    table_schema_provider: Optional[Callable[[str], Dict[str, Any]]] = None,
+    enable_thinking: Optional[bool] = None,
+    temperature: Optional[float] = None,
 ) -> SQLValidationAgent:
     """
     创建SQL纠错校验智能体实例
+
+    Args:
+        api_key: API密钥，默认从配置读取
+        model_name: 模型名称，默认从配置读取
+        base_url: API基础URL，默认从配置读取
+
+    Returns:
+        SQLValidationAgent: 智能体实例
     """
+    from config import ModelConfig
+
     return SQLValidationAgent(
-        api_key=api_key,
-        model_name=model_name,
-        model_type=model_type
+        api_key=api_key or ModelConfig.get_api_key(),
+        model_name=model_name or ModelConfig.get_model_name(),
+        base_url=base_url or ModelConfig.get_base_url(),
+        schema_text=schema_text,
+        sql_dialect=sql_dialect,
+        sql_executor=sql_executor,
+        tables_provider=tables_provider,
+        table_schema_provider=table_schema_provider,
+        enable_thinking=enable_thinking,
+        temperature=temperature,
     )
