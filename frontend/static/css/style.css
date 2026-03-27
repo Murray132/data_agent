@@ -547,6 +547,40 @@ body {
     min-height: 400px;
 }
 
+#sql-agent-section.active {
+    min-height: 0;
+    overflow: hidden;
+}
+
+#sql-agent-section .agent-container {
+    min-height: 0;
+    height: calc(100vh - var(--header-height) - 170px);
+    overflow: hidden;
+}
+
+#sql-agent-section .sql-output-panel {
+    min-height: 0;
+}
+
+#sql-agent-section .result-box {
+    min-height: 0;
+    overflow: hidden;
+}
+
+#sql-agent-section .thinking-process {
+    min-height: 0;
+    margin-bottom: 0;
+}
+
+#sql-agent-section .final-result {
+    margin-top: 16px;
+    overflow: auto;
+}
+
+#sql-agent-section .execution-result {
+    overflow: auto;
+}
+
 .agent-input-panel h3,
 .agent-output-panel h3 {
     margin-bottom: 20px;
@@ -1071,6 +1105,15 @@ body {
     .agent-container {
         flex-direction: column;
     }
+
+    #sql-agent-section .agent-container {
+        height: auto;
+        overflow: visible;
+    }
+
+    #sql-agent-section .result-box {
+        overflow: auto;
+    }
     
     .agent-input-panel {
         width: 100%;
@@ -1278,15 +1321,53 @@ body {
 }
 
 .sql-block-item {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px dashed #e2e8f0;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
 }
 
 .sql-block-item:first-of-type {
-    margin-top: 6px;
-    padding-top: 6px;
-    border-top: none;
+    margin-top: 8px;
+}
+
+.sql-block-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.sql-block-kind {
+    font-size: 12px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.sql-block-content {
+    color: #334155;
+}
+
+.sql-block-text {
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+}
+
+.sql-block-item-thinking {
+    background: #fffdf5;
+    border-color: #f5e6a8;
+}
+
+.sql-block-item-text {
+    background: #f8fafc;
+    border-color: #dbe3ef;
+}
+
+.sql-block-item-tool {
+    background: #f5f9ff;
+    border-color: #bfdbfe;
 }
 
 .checkbox-label {

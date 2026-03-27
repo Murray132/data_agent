@@ -216,6 +216,7 @@ class SQLGenerationAgent:
 
     def _get_system_prompt(self) -> str:
         prompt = self.SYSTEM_PROMPT.replace("本数据库使用SQLite语法", f"当前数据库使用{self.sql_dialect}语法")
+        prompt += self._get_thinking_control_instruction()
         if self.schema_text:
             prompt += f"""
 
@@ -229,6 +230,55 @@ class SQLGenerationAgent:
 不要再尝试读取本地 skill 文件或调用本地 schema 分析脚本。
 """
         return prompt
+
+    def _get_thinking_control_instruction(self) -> str:
+        """为支持 prompt 控制思考模式的模型注入显式指令。"""
+        if self.enable_thinking is True:
+            return """
+
+# 思考模式控制
+本次请求要求开启思考模式。若模型支持通过提示词控制，请遵循字面指令：think
+如果你会输出思考过程，请将思考过程与最终结论清晰区分。
+"""
+        if self.enable_thinking is False:
+            return """
+
+# 思考模式控制
+本次请求要求关闭思考模式。若模型支持通过提示词控制，请遵循字面指令：nothink
+请不要输出冗长的中间推理，直接给出必要结论与结果。
+"""
+        return ""
+
+    def _apply_thinking_control_to_user_prompt(self, prompt: str) -> str:
+        """在用户提示词中追加 think/nothink，方便 vLLM 类模型命中控制词。"""
+        if self.enable_thinking is True:
+            return f"{prompt}\n\n[思考模式控制]\nthink\n"
+        if self.enable_thinking is False:
+            return f"{prompt}\n\n[思考模式控制]\nnothink\n"
+        return prompt
+
+    def _sanitize_provider_request(self, request_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """规范化 provider 请求，兼容要求非流式显式关闭 thinking 的端点。"""
+        cleaned = dict(request_kwargs)
+        cleaned.pop("enable_thinking", None)
+
+        extra_body = cleaned.get("extra_body")
+        if isinstance(extra_body, dict):
+            sanitized_extra_body = dict(extra_body)
+            sanitized_extra_body.pop("enable_thinking", None)
+        else:
+            sanitized_extra_body = {}
+
+        # 对部分 Qwen / vLLM 兼容端点，非流式调用时必须显式传 false。
+        if cleaned.get("stream") is False:
+            sanitized_extra_body["enable_thinking"] = False
+
+        if sanitized_extra_body:
+            cleaned["extra_body"] = sanitized_extra_body
+        else:
+            cleaned.pop("extra_body", None)
+
+        return cleaned
 
     def _execute_sql(self, sql: str) -> Dict[str, Any]:
         if self.sql_executor:
@@ -457,6 +507,8 @@ class SQLGenerationAgent:
 ```
 """
         
+        prompt = self._apply_thinking_control_to_user_prompt(prompt)
+
         # 调用智能体
         msg = Msg("user", prompt, "user")
         response = await self.agent.reply(msg)
@@ -529,7 +581,7 @@ class SQLGenerationAgent:
             "status": "done",
             "message": f"使用模型: {self.model_name}"
         }
-        
+
         # ============ 第一阶段：任务理解和规划 ============
         yield {
             "type": "step",
@@ -632,6 +684,8 @@ class SQLGenerationAgent:
 ```
 """
         
+        planning_prompt = self._apply_thinking_control_to_user_prompt(planning_prompt)
+
         # 将AgentScope自动生成的Skill提示注入system prompt
         # 这样可利用register_agent_skill带来的技能元信息（名称/描述/目录）
         skill_prompt = self.toolkit.get_agent_skill_prompt()
@@ -653,7 +707,7 @@ class SQLGenerationAgent:
             model_name=self.model_name,
             api_key=self.api_key,
             client_kwargs={"base_url": self.base_url},
-            stream=False,  # 非流式
+            stream=False,
             generate_kwargs=config.ModelConfig.get_generate_kwargs(
                 base_url=self.base_url,
                 model_name=self.model_name,
@@ -691,6 +745,7 @@ class SQLGenerationAgent:
                     "stream": False,
                     **non_stream_model.generate_kwargs,
                 }
+                request_kwargs = self._sanitize_provider_request(request_kwargs)
                 if tools_json:
                     request_kwargs["tools"] = non_stream_model._format_tools_json_schemas(tools_json)
 
@@ -707,7 +762,6 @@ class SQLGenerationAgent:
                     provider_response,
                 )
 
-                # 统计token用量（若模型返回usage）
                 usage = getattr(response, "usage", None)
                 if usage is not None:
                     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
@@ -734,8 +788,7 @@ class SQLGenerationAgent:
                             "time": round(total_elapsed_time, 3),
                         }
                     }
-                
-                # ChatResponse.content 可能是未标注类型，先做显式收窄，避免类型检查误报
+
                 raw_content = getattr(response, "content", None)
                 content_blocks = raw_content if isinstance(raw_content, list) else []
                 raw_response_payload = provider_response.model_dump() if hasattr(provider_response, "model_dump") else str(provider_response)
@@ -754,7 +807,7 @@ class SQLGenerationAgent:
                             serialized_blocks.append(item)
                 except Exception:
                     serialized_blocks = []
-                
+
                 print(f"[SQLAgent] 收到响应，content_blocks数量: {len(content_blocks)}")
                 yield {
                     "type": "raw_model_response",
@@ -1134,6 +1187,7 @@ class SQLGenerationAgent:
 
 请返回优化后的SQL和优化说明。
 """
+        prompt = self._apply_thinking_control_to_user_prompt(prompt)
         
         msg = Msg("user", prompt, "user")
         response = await self.agent.reply(msg)
@@ -1165,6 +1219,7 @@ class SQLGenerationAgent:
 3. 各个子句（WHERE、JOIN、GROUP BY等）的作用
 4. 预期的返回结果
 """
+        prompt = self._apply_thinking_control_to_user_prompt(prompt)
         
         msg = Msg("user", prompt, "user")
         response = await self.agent.reply(msg)

@@ -145,7 +145,6 @@ class ModelConfigRequest(BaseModel):
     base_url: str = Field(..., description="API基础URL")
     api_key: str = Field(..., description="API密钥")
     model_name: str = Field(..., description="模型名称")
-    enable_thinking: bool = Field(True, description="是否开启 thinking")
     temperature: float = Field(0.7, description="温度参数")
 
 
@@ -259,14 +258,9 @@ ROLE_PERMISSIONS: Dict[str, List[str]] = {
 # 演示账号（密码为SHA256）
 USER_STORE: Dict[str, Dict[str, str]] = {
     "admin": {
-        "password_hash": "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9",
+        "password_hash": "b68343b1f7f151c70abaaefdd7a48bc7a0b3f72237d61411c1ff06c2e7c4cbdc",
         "role": "admin",
         "display_name": "系统管理员",
-    },
-    "user": {
-        "password_hash": "65375049b9e4d7cad6c9ba286fdeb9394b28135a3e84136404cfccfdcc438894",
-        "role": "user",
-        "display_name": "应用用户",
     },
 }
 
@@ -843,7 +837,7 @@ def _execute_sql_for_source(source: Dict[str, Any], sql: str) -> Dict[str, Any]:
 
 def _get_sql_validation_agent_for_source(source: Dict[str, Any], enable_thinking: Optional[bool] = None, temperature: Optional[float] = None):
     if source.get("type") == "sqlite" and source.get("id") == LOCAL_DATASOURCE_ID:
-        if enable_thinking is None:
+        if enable_thinking is None and temperature is None:
             return get_sql_validation_agent()
         return create_sql_validation_agent(enable_thinking=enable_thinking, temperature=temperature)
     return create_sql_validation_agent(
@@ -859,7 +853,7 @@ def _get_sql_validation_agent_for_source(source: Dict[str, Any], enable_thinking
 
 def _get_sql_agent_for_source(source: Dict[str, Any], enable_thinking: Optional[bool] = None, temperature: Optional[float] = None):
     if source.get("type") == "sqlite" and source.get("id") == LOCAL_DATASOURCE_ID:
-        if enable_thinking is None:
+        if enable_thinking is None and temperature is None:
             return get_sql_agent()
         return create_sql_agent(enable_thinking=enable_thinking, temperature=temperature)
     return create_sql_agent(
@@ -1701,7 +1695,6 @@ async def get_model_config():
         "api_key": masked_key,
         "model_name": config["model_name"],
         "full_key": config["api_key"],  # 完整key，前端保存到内存中
-        "enable_thinking": bool(config.get("enable_thinking", True)),
         "temperature": float(config.get("temperature", 0.7)),
     }
 
@@ -1723,7 +1716,6 @@ async def save_model_config(request: ModelConfigRequest):
         "base_url": request.base_url,
         "api_key": request.api_key,
         "model_name": request.model_name,
-        "enable_thinking": request.enable_thinking,
         "temperature": request.temperature,
     })
 
@@ -1739,7 +1731,6 @@ async def save_model_config(request: ModelConfigRequest):
                 "base_url": request.base_url,
                 "api_key": request.api_key[:4] + "..." + request.api_key[-4:],
                 "model_name": request.model_name,
-                "enable_thinking": request.enable_thinking,
                 "temperature": request.temperature,
             }
         }
@@ -1767,7 +1758,6 @@ async def test_model_config(request: ModelConfigRequest):
             base_url=request.base_url,
             model_name=request.model_name,
             stream=False,
-            enable_thinking=request.enable_thinking,
             temperature=request.temperature,
         )
         generate_kwargs["max_tokens"] = 5

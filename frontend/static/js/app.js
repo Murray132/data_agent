@@ -156,14 +156,6 @@ function updateCurrentDataSourceBanner() {
     bannerEl.textContent = `当前数据源：${source.name} (${String(source.type || '').toUpperCase()})${readonlyText}`;
 }
 
-function isThinkingEnabled() {
-    if (state.currentModelConfig && typeof state.currentModelConfig.enable_thinking === 'boolean') {
-        return state.currentModelConfig.enable_thinking;
-    }
-    const checkbox = document.getElementById('model-enable-thinking');
-    return checkbox ? Boolean(checkbox.checked) : true;
-}
-
 function getDefaultTemperature() {
     if (state.currentModelConfig && typeof state.currentModelConfig.temperature === 'number') {
         return state.currentModelConfig.temperature;
@@ -174,36 +166,27 @@ function getDefaultTemperature() {
 }
 
 function syncInferenceControlsWithConfig(config) {
-    const thinkingValue = config && typeof config.enable_thinking === 'boolean' ? config.enable_thinking : true;
     const temperatureValue = config && typeof config.temperature === 'number' ? config.temperature : 0.7;
 
-    const sqlThinking = document.getElementById('sql-enable-thinking');
-    const validationThinking = document.getElementById('validation-enable-thinking');
     const sqlTemp = document.getElementById('sql-temperature');
     const validationTemp = document.getElementById('validation-temperature');
 
-    if (sqlThinking) sqlThinking.checked = thinkingValue;
-    if (validationThinking) validationThinking.checked = thinkingValue;
     if (sqlTemp) sqlTemp.value = String(temperatureValue);
     if (validationTemp) validationTemp.value = String(temperatureValue);
 }
 
 function getSQLInferenceOptions() {
-    const thinkingEl = document.getElementById('sql-enable-thinking');
     const tempEl = document.getElementById('sql-temperature');
     const temperature = Number(tempEl?.value || getDefaultTemperature());
     return {
-        enable_thinking: thinkingEl ? Boolean(thinkingEl.checked) : isThinkingEnabled(),
         temperature: Number.isNaN(temperature) ? getDefaultTemperature() : temperature
     };
 }
 
 function getValidationInferenceOptions() {
-    const thinkingEl = document.getElementById('validation-enable-thinking');
     const tempEl = document.getElementById('validation-temperature');
     const temperature = Number(tempEl?.value || getDefaultTemperature());
     return {
-        enable_thinking: thinkingEl ? Boolean(thinkingEl.checked) : isThinkingEnabled(),
         temperature: Number.isNaN(temperature) ? getDefaultTemperature() : temperature
     };
 }
@@ -424,7 +407,6 @@ function getModelConfigFormValues() {
         base_url: document.getElementById('model-base-url').value.trim(),
         api_key: document.getElementById('model-api-key').value.trim(),
         model_name: document.getElementById('model-name').value.trim(),
-        enable_thinking: Boolean(document.getElementById('model-enable-thinking')?.checked),
         temperature: Number(document.getElementById('model-temperature')?.value || 0.7)
     };
 }
@@ -455,8 +437,7 @@ function renderCurrentModelInfo(config) {
         <div class="model-current-line">供应商：${provider}</div>
         <div class="model-current-line">模型：${config.model_name || '未配置'}</div>
         <div class="model-current-line">Base URL：${config.base_url || '未配置'}</div>
-        <div class="model-current-line">Thinking：${config.enable_thinking ? '开启' : '关闭'}</div>
-        <div class="model-current-line">Temperature：${config.temperature ?? 0.7}</div>
+        <div class="model-current-line">temperature：${config.temperature ?? 0.7}</div>
     `;
 }
 
@@ -467,10 +448,6 @@ function setModelConfigFormValues(config) {
     document.getElementById('model-base-url').value = config.base_url || '';
     document.getElementById('model-api-key').value = '';
     document.getElementById('model-name').value = config.model_name || '';
-    const thinkingCheckbox = document.getElementById('model-enable-thinking');
-    if (thinkingCheckbox) {
-        thinkingCheckbox.checked = config.enable_thinking !== false;
-    }
     const temperatureInput = document.getElementById('model-temperature');
     if (temperatureInput) {
         temperatureInput.value = String(config.temperature ?? 0.7);
@@ -490,7 +467,7 @@ function validateModelConfigInput(configData) {
         throw new Error('Model Name 不能为空');
     }
     if (Number.isNaN(Number(configData.temperature))) {
-        throw new Error('Temperature 不合法');
+        throw new Error('temperature 不合法');
     }
     if (!configData.api_key) {
         throw new Error('API Key 不能为空，请输入或先加载已有配置');
@@ -508,7 +485,6 @@ function buildModelConfigPayload() {
         base_url: formData.base_url,
         model_name: formData.model_name,
         api_key: formData.api_key || fallbackKey,
-        enable_thinking: formData.enable_thinking,
         temperature: formData.temperature
     };
 }
@@ -576,7 +552,6 @@ async function saveModelConfig() {
             base_url: payload.base_url,
             model_name: payload.model_name,
             full_key: payload.api_key,
-            enable_thinking: payload.enable_thinking,
             temperature: payload.temperature
         };
         renderCurrentModelInfo(state.currentModelConfig);
@@ -1705,7 +1680,6 @@ async function generateSQL() {
             body: JSON.stringify({
                 requirement,
                 context: context || null,
-                enable_thinking: inference.enable_thinking,
                 temperature: inference.temperature
             })
         });
@@ -1797,6 +1771,62 @@ function renderCollapsiblePre(label, value, options = {}) {
             <summary>${escapeHtml(label)}${text.length > previewLength ? `：${escapeHtml(preview)}` : ''}</summary>
             <pre class="sql-step-pre">${escapeHtml(text)}</pre>
         </details>
+    `;
+}
+
+function getParsedBlockTypeLabel(type) {
+    const normalized = String(type || '').toLowerCase();
+    if (normalized === 'thinking') return '思考';
+    if (normalized === 'text') return '回复';
+    if (normalized === 'tool_use') return '工具调用';
+    if (normalized === 'reasoning') return '推理';
+    return normalized || '未知类型';
+}
+
+function getParsedBlockMainText(block) {
+    if (!block || typeof block !== 'object') return '';
+    return normalizeText(
+        block.thinking
+        || block.text
+        || block.content
+        || block.reasoning
+        || block.reasoning_content
+        || ''
+    ).trim();
+}
+
+function renderParsedModelBlock(block, index) {
+    const blockType = String(block?.type || 'unknown').toLowerCase();
+    const title = getParsedBlockTypeLabel(blockType);
+
+    if (blockType === 'tool_use') {
+        const toolName = String(block?.name || 'unknown');
+        const toolInput = block?.input ?? {};
+        return `
+            <div class="sql-block-item sql-block-item-tool">
+                <div class="sql-block-title">
+                    <span class="line-tag">Block ${index + 1}</span>
+                    <span class="sql-block-kind">${escapeHtml(title)}</span>
+                </div>
+                <div class="sql-block-content">
+                    <div><span class="line-tag">工具名</span> ${escapeHtml(toolName)}</div>
+                    ${renderCollapsiblePre('查看工具参数', toolInput, { previewLength: 220, open: false })}
+                </div>
+            </div>
+        `;
+    }
+
+    const mainText = getParsedBlockMainText(block);
+    return `
+        <div class="sql-block-item sql-block-item-${escapeHtml(blockType || 'unknown')}">
+            <div class="sql-block-title">
+                <span class="line-tag">Block ${index + 1}</span>
+                <span class="sql-block-kind">${escapeHtml(title)}</span>
+            </div>
+            <div class="sql-block-content">
+                <div class="sql-block-text">${escapeHtml(mainText || '本块没有可展示内容')}</div>
+            </div>
+        </div>
     `;
 }
 
@@ -1954,7 +1984,7 @@ function handleSQLStreamEvent(event, processBoardEl, finalResultEl) {
                 `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
                 `
                 <div><span class="line-tag">📤 模型请求</span> 本轮实际下发给模型的请求体</div>
-                ${renderCollapsiblePre('查看本轮完整请求体', event.payload, { previewLength: 240, open: true })}
+                ${renderCollapsiblePre('查看本轮完整请求体', event.payload, { previewLength: 240, open: false })}
                 `,
                 'iteration'
             );
@@ -1969,13 +1999,8 @@ function handleSQLStreamEvent(event, processBoardEl, finalResultEl) {
                 cardKey,
                 `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
                 `
-                <div><span class="line-tag">🧩 解析块</span> 按 thinking / text / tool_use 顺序展示</div>
-                ${blocks.map((block, index) => `
-                    <div class="sql-block-item">
-                        <div><span class="line-tag">Block ${index + 1}</span> ${escapeHtml(String(block?.type || 'unknown'))}</div>
-                        ${renderCollapsiblePre(`查看 ${String(block?.type || 'unknown')} 完整内容`, block, { previewLength: 220, open: index === 0 })}
-                    </div>
-                `).join('')}
+                <div><span class="line-tag">🧩 解析块</span> 已按 thinking / text / tool_use 规范化展示</div>
+                ${blocks.map((block, index) => renderParsedModelBlock(block, index)).join('')}
                 `,
                 'iteration'
             );
@@ -2059,16 +2084,6 @@ function handleSQLStreamEvent(event, processBoardEl, finalResultEl) {
             break;
 
         case 'raw_model_response':
-            appendSQLProcessLine(
-                processBoardEl,
-                getCurrentSQLIterationCardKey(),
-                `步骤 2: 第 ${escapeHtml(String(event.iteration || '?'))} 轮推理`,
-                `
-                <div><span class="line-tag">🧪 原始回包</span></div>
-                ${renderCollapsiblePre('查看原始模型返回', event.payload, { previewLength: 220 })}
-                `,
-                'iteration'
-            );
             break;
             
         case 'result':
@@ -3281,7 +3296,6 @@ async function validateSQL() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sql: sql,
-                enable_thinking: inference.enable_thinking,
                 temperature: inference.temperature
             })
         });

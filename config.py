@@ -28,7 +28,6 @@ class ModelConfig:
         "base_url": "https://api.openai.com/v1",
         "api_key": "YOUR_OPENAI_API_KEY",
         "model_name": "gpt-4o-mini",
-        "enable_thinking": True,
         "temperature": 0.7,
     }
 
@@ -61,8 +60,6 @@ class ModelConfig:
                 for key in required_keys:
                     if key not in config:
                         config[key] = cls.DEFAULT_CONFIG[key]
-                if 'enable_thinking' not in config:
-                    config['enable_thinking'] = cls.DEFAULT_CONFIG['enable_thinking']
                 if 'temperature' not in config:
                     config['temperature'] = cls.DEFAULT_CONFIG['temperature']
                 cls._cached_config = config
@@ -93,7 +90,6 @@ class ModelConfig:
                 "base_url": config.get("base_url", cls.DEFAULT_CONFIG["base_url"]),
                 "api_key": config.get("api_key", cls.DEFAULT_CONFIG["api_key"]),
                 "model_name": config.get("model_name", cls.DEFAULT_CONFIG["model_name"]),
-                "enable_thinking": bool(config.get("enable_thinking", cls.DEFAULT_CONFIG["enable_thinking"])),
                 "temperature": float(config.get("temperature", cls.DEFAULT_CONFIG["temperature"])),
             }
 
@@ -138,30 +134,13 @@ class ModelConfig:
         """
         根据供应商/模型返回需要附加的生成参数。
 
-        兼容规则：部分 Qwen 兼容端点在非流式调用时要求 enable_thinking=false。
+        当前仅透传通用参数，thinking 控制交给提示词层处理，
+        避免在 OpenAI 兼容 chat.completions 请求里混入供应商私有字段。
         """
         kwargs: Dict[str, Any] = {}
         temperature_value = cls.load().get("temperature", 0.7) if temperature is None else temperature
         if temperature_value is not None:
             kwargs["temperature"] = float(temperature_value)
-
-        if stream:
-            return kwargs
-
-        cfg = cls.load()
-        url = (base_url or cfg.get("base_url", "") or "").lower()
-        model = (model_name or cfg.get("model_name", "") or "").lower()
-
-        enable_thinking_value = cls.load().get("enable_thinking", True) if enable_thinking is None else enable_thinking
-
-        is_qwen_compatible_endpoint = ("aliyuncs.com" in url)
-        is_qwen = model.startswith("qwen")
-
-        if is_qwen_compatible_endpoint and is_qwen:
-            # OpenAI SDK 的 chat.completions.create 不接受顶层 enable_thinking，
-            # 需要通过 extra_body 透传给兼容端点。
-            kwargs["extra_body"] = {"enable_thinking": bool(enable_thinking_value)}
-            return kwargs
 
         return kwargs
 
