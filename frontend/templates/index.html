@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DATA AGENT - 数据治理智能体平台</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- 头部导航 -->
+    <header class="header">
+        <div class="header-content">
+            <h1 class="logo">DATA AGENT</h1>
+            <p class="subtitle">数据治理智能体平台</p>
+        </div>
+        <nav class="nav">
+            <button class="nav-btn active" data-tab="tables">数据表管理</button>
+            <button class="nav-btn" data-tab="metadata-agent">元数据补全</button>
+            <button class="nav-btn" data-tab="sql-agent">SQL生成</button>
+            <button class="nav-btn" data-tab="tagging-agent">数据资产打标</button>
+            <button class="nav-btn" data-tab="sql-validation">SQL纠错校验</button>
+            <button class="nav-btn nav-btn-disabled" disabled>
+                安全分级分类
+                <span class="badge-dev">开发中</span>
+            </button>
+            <button class="nav-btn nav-btn-disabled" disabled>
+                标准落标建议
+                <span class="badge-dev">开发中</span>
+            </button>
+        </nav>
+    </header>
+
+    <!-- 主要内容区 -->
+    <main class="main-content">
+        <!-- 数据表管理页面 -->
+        <section id="tables-section" class="tab-section active">
+            <div class="section-header">
+                <h2>数据表管理</h2>
+                <div class="stats" id="db-stats"></div>
+            </div>
+            
+            <div class="panel-container">
+                <!-- 左侧：表列表 -->
+                <div class="panel table-list-panel">
+                    <div class="panel-header">
+                        <h3>数据表列表</h3>
+                        <input type="text" id="table-search" placeholder="搜索表..." class="search-input">
+                    </div>
+                    <div class="panel-content">
+                        <ul id="table-list" class="table-list"></ul>
+                    </div>
+                </div>
+                
+                <!-- 右侧：表详情 -->
+                <div class="panel table-detail-panel">
+                    <div class="panel-header">
+                        <h3 id="detail-title">选择一个表查看详情</h3>
+                        <div class="tab-buttons">
+                            <button class="tab-btn active" data-subtab="schema">表结构</button>
+                            <button class="tab-btn" data-subtab="data">数据预览</button>
+                            <button class="tab-btn" data-subtab="relations">关联关系</button>
+                        </div>
+                    </div>
+                    <div class="panel-content">
+                        <!-- 表结构 -->
+                        <div id="schema-subtab" class="subtab-content active">
+                            <div id="table-description" class="description-box"></div>
+                            <table id="columns-table" class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>字段名</th>
+                                        <th>类型</th>
+                                        <th>约束</th>
+                                        <th>描述</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- 数据预览 -->
+                        <div id="data-subtab" class="subtab-content">
+                            <div class="data-controls">
+                                <span id="data-info"></span>
+                                <div class="pagination">
+                                    <button id="prev-page" class="btn btn-small">上一页</button>
+                                    <span id="page-info"></span>
+                                    <button id="next-page" class="btn btn-small">下一页</button>
+                                </div>
+                            </div>
+                            <div class="table-container">
+                                <table id="data-table" class="data-table">
+                                    <thead></thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        
+                        <!-- 关联关系 -->
+                        <div id="relations-subtab" class="subtab-content">
+                            <div id="relations-content"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ER图区域 -->
+            <div class="er-diagram-container">
+                <div class="er-header">
+                    <h4>📊 数据库ER图</h4>
+                    <div class="er-controls">
+                        <button class="btn btn-small" onclick="resetERDiagram()">重置视图</button>
+                        <button class="btn btn-small" onclick="toggleERFullscreen()">全屏</button>
+                    </div>
+                </div>
+                <div id="er-diagram"></div>
+                <div class="er-legend">
+                    <span><span class="legend-pk">■</span> 主键</span>
+                    <span><span class="legend-fk">■</span> 外键</span>
+                    <span><span class="legend-col">■</span> 普通字段</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- 元数据补全Agent页面 -->
+        <section id="metadata-agent-section" class="tab-section">
+            <div class="section-header">
+                <h2>元数据补全 Agent</h2>
+                <p class="desc">使用AI智能体自动生成表和字段的元数据描述</p>
+            </div>
+            
+            <div class="agent-container">
+                <div class="agent-input-panel">
+                    <h3>选择要生成元数据的表</h3>
+                    
+                    <div class="form-group">
+                        <label>选择数据表：</label>
+                        <select id="metadata-table-select" class="form-select">
+                            <option value="">-- 请选择 --</option>
+                        </select>
+                    </div>
+                    
+                    <div class="missing-metadata-info" id="missing-metadata-info">
+                        <h4>缺少元数据的表：</h4>
+                        <ul id="missing-metadata-list"></ul>
+                    </div>
+                    
+                    <button id="generate-metadata-btn" class="btn btn-primary btn-large">
+                        生成元数据
+                    </button>
+                </div>
+                
+                <div class="agent-output-panel">
+                    <h3>生成结果</h3>
+                    <div id="metadata-result" class="result-box">
+                        <p class="placeholder">生成的元数据将显示在这里...</p>
+                    </div>
+                    
+                    <div class="action-buttons" id="metadata-actions" style="display: none;">
+                        <button id="apply-metadata-btn" class="btn btn-success">应用到数据库</button>
+                        <button id="copy-metadata-btn" class="btn btn-secondary">复制结果</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SQL生成Agent页面 -->
+        <section id="sql-agent-section" class="tab-section">
+            <div class="section-header">
+                <h2>SQL生成 Agent</h2>
+                <p class="desc">用自然语言描述需求，AI自动生成SQL查询语句</p>
+            </div>
+            
+            <div class="agent-container">
+                <div class="agent-input-panel sql-input-panel">
+                    <h3>描述你的查询需求</h3>
+                    
+                    <div class="form-group">
+                        <label>需求描述：</label>
+                        <textarea id="sql-requirement" class="form-textarea" rows="4" 
+                            placeholder="例如：查询所有VIP客户的账户余额，按余额从高到低排序"></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>补充信息（可选）：</label>
+                        <textarea id="sql-context" class="form-textarea" rows="2" 
+                            placeholder="提供额外的背景信息或限制条件"></textarea>
+                    </div>
+                    
+                    <div class="example-queries">
+                        <h4>示例查询：</h4>
+                        <ul>
+                            <li><a href="#" class="example-link" data-query="查询账户余额超过100万的客户信息">查询账户余额超过100万的客户信息</a></li>
+                            <li><a href="#" class="example-link" data-query="统计各类型贷款的申请数量和批准数量">统计各类型贷款的申请数量和批准数量</a></li>
+                            <li><a href="#" class="example-link" data-query="找出最近30天内有交易的客户及其交易总额">找出最近30天内有交易的客户及其交易总额</a></li>
+                            <li><a href="#" class="example-link" data-query="查询持有股票市值最高的前10个证券账户">查询持有股票市值最高的前10个证券账户</a></li>
+                        </ul>
+                    </div>
+                    
+                    <button id="generate-sql-btn" class="btn btn-primary btn-large">
+                        生成SQL
+                    </button>
+                </div>
+                
+                <div class="agent-output-panel sql-output-panel">
+                    <h3>生成结果</h3>
+                    
+                    <div id="sql-result" class="result-box">
+                        <p class="placeholder">生成的SQL将显示在这里...</p>
+                    </div>
+                    
+                    <div class="action-buttons" id="sql-actions" style="display: none;">
+                        <button id="execute-sql-btn" class="btn btn-success">执行查询</button>
+                        <button id="copy-sql-btn" class="btn btn-secondary">复制SQL</button>
+                        <button id="explain-sql-btn" class="btn btn-info">解释SQL</button>
+                    </div>
+                    
+                    <div id="sql-execution-result" class="execution-result" style="display: none;">
+                        <h4>执行结果</h4>
+                        <div class="table-container">
+                            <table id="sql-result-table" class="data-table">
+                                <thead></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 数据资产打标Agent页面 -->
+        <section id="tagging-agent-section" class="tab-section">
+            <div class="section-header">
+                <h2>数据资产打标 Agent</h2>
+                <p class="desc">使用AI自动为数据表和字段生成语义标签，便于数据检索和分类</p>
+            </div>
+            
+            <div class="agent-container">
+                <div class="agent-input-panel">
+                    <h3>选择数据表</h3>
+                    
+                    <div class="form-group">
+                        <label>选择数据表：</label>
+                        <select id="tagging-table-select" class="form-select">
+                            <option value="">-- 请选择 --</option>
+                        </select>
+                    </div>
+                    
+                    <!-- 现有标签展示 -->
+                    <div id="existing-tags-panel" class="tags-panel" style="display: none;">
+                        <h4>现有表标签</h4>
+                        <div id="table-tags" class="tag-list"></div>
+                        
+                        <h4>现有字段标签</h4>
+                        <div id="column-tags-list"></div>
+                    </div>
+                    
+                    <button id="generate-tags-btn" class="btn btn-primary btn-large">
+                        生成标签
+                    </button>
+                </div>
+                
+                <div class="agent-output-panel">
+                    <h3>生成结果</h3>
+                    <div id="tagging-result" class="result-box">
+                        <p class="placeholder">生成的标签将显示在这里...</p>
+                    </div>
+                    
+                    <div class="action-buttons" id="tagging-actions" style="display: none;">
+                        <button id="apply-tags-btn" class="btn btn-success">应用标签</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+       <!-- SQL纠错校验Agent页面 -->
+        <section id="sql-validation-section" class="tab-section">
+            <div class="section-header">
+                <h2>SQL纠错校验 Agent</h2>
+                <p class="desc">智能检查SQL语法、性能问题，提供专业修复建议</p>
+            </div>
+            
+            <!-- 三栏布局容器 -->
+            <div class="validation-flow-container">
+                <!-- 左侧：SQL输入区 -->
+                <div class="validation-panel left-panel">
+                    <div class="panel-title">
+                        <span class="title-icon">📝</span>
+                        <h3>随机生成SQL（按钮）</h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="sql-input-box">
+                            <div class="input-header">
+                                <span class="input-label">随机生成的SQL</span>
+                                <button id="generate-random-sql" class="btn-inline btn-generate">
+                                    <span class="btn-icon">🔄</span>
+                                    生成SQL
+                                </button>
+                            </div>
+                            <div class="sql-display-wrapper">
+                                <pre id="sql-to-validate" class="sql-code-display" contenteditable="true">点击"生成SQL"按钮随机生成测试SQL
+或直接在此编辑输入您的SQL语句...</pre>
+                            </div>
+                            <div class="sql-meta-info">
+                                <span class="meta-item" id="sql-type-hint" style="display: none;">
+                                    <span class="meta-icon">💡</span>
+                                    <span class="meta-text"></span>
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- 模型调用过程展示区 -->
+                        <div class="model-process-box" id="model-process-box" style="display: none;">
+                            <div class="process-header">
+                                <span class="process-icon">⚙️</span>
+                                <span class="process-title">模型调用过程</span>
+                            </div>
+                            <div class="process-content" id="model-process-content">
+                                <!-- 动态生成的调用过程 -->
+                            </div>
+                        </div>
+                        
+                        <div class="note-box">
+                            <span class="note-icon">ℹ️</span>
+                            <span class="note-text">支持输入或粘贴SQL，考虑长SQL的显示问题</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 中间：校验按钮与流程箭头 -->
+                <div class="validation-action">
+                    <button id="validate-sql-btn" class="btn-validate">
+                        <div class="btn-validate-content">
+                            <span class="validate-icon">🔍</span>
+                            <span class="validate-text">校验<br>SQL</span>
+                        </div>
+                    </button>
+                    <div class="flow-arrow">
+                        <svg width="60" height="40" viewBox="0 0 60 40">
+                            <defs>
+                                <linearGradient id="arrowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                    <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+                                    <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+                                </linearGradient>
+                            </defs>
+                            <path d="M 5 20 L 45 20 L 40 15 M 45 20 L 40 25" 
+                                  stroke="url(#arrowGradient)" 
+                                  stroke-width="3" 
+                                  fill="none" 
+                                  stroke-linecap="round" 
+                                  stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    
+                    <!-- SQL校验执行过程 -->
+                    <div class="validation-process-box" id="validation-process-box" style="display: none;">
+                        <div class="process-header">
+                            <span class="process-icon">🔍</span>
+                            <span class="process-title">SQL校验过程</span>
+                        </div>
+                        <div class="process-steps" id="validation-steps"></div>
+                        <div class="process-thinking" id="validation-thinking-content"></div>
+                    </div>
+                </div>
+                
+                <!-- 右侧容器 -->
+                <div class="validation-right-container">
+                    <!-- 右侧上：校验结果 -->
+                    <div class="validation-panel right-panel-top">
+                        <div class="panel-title">
+                            <span class="title-icon">✅</span>
+                            <h3>校验结果</h3>
+                        </div>
+                        <div class="panel-body">
+                            <div id="validation-result" class="validation-result-box">
+                                <div class="placeholder-content">
+                                    <span class="placeholder-icon">🎯</span>
+                                    <p class="placeholder-text">校验结果将在这里显示</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 右侧下：修改建议 -->
+                    <div class="validation-panel right-panel-bottom">
+                        <div class="panel-title">
+                            <span class="title-icon">💡</span>
+                            <h3>修改建议</h3>
+                        </div>
+                        <div class="panel-body">
+                            <div id="validation-suggestions" class="suggestions-box">
+                                <div class="placeholder-content">
+                                    <span class="placeholder-icon">📋</span>
+                                    <p class="placeholder-text">AI的修改建议将在这里显示</p>
+                                </div>
+                            </div>
+                            <!-- SQL差异对比 -->
+                            <div id="sql-diff-panel" class="diff-panel" style="display: none;">
+                                <div class="diff-header">修改前后对比</div>
+                                <div id="sql-diff" class="diff-view"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 加载遮罩 -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p id="loading-text">正在处理...</p>
+    </div>
+
+    <!-- 弹窗 -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">编辑</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-footer">
+                <button id="modal-cancel" class="btn btn-secondary">取消</button>
+                <button id="modal-confirm" class="btn btn-primary">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示消息 -->
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
